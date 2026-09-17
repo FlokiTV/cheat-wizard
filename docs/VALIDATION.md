@@ -1,0 +1,51 @@
+# Validation status for Cheat Wizard v1.7.0
+
+## Windows-native gates executed for the CW rebrand
+
+- `test-windows.bat`: PASS.
+- MSVC Release outputs: `cw.exe`, `cw-gui.exe`, `cw-trainer-builder.exe`: PASS.
+- CTest on the Windows build: 1/1 PASS.
+- Direct `cw_core_tests.exe`: ALL CORE TESTS PASSED, including `.mces`, `.mcea`, `.mcep`, `.mcptr`, `.mcpm`, pointer-profile and trainer-adjacent persistence contracts.
+- `cw.exe` CLI banner/version/prompt smoke: PASS (`Cheat Wizard`, `cw>`).
+- `cw-trainer-builder.exe` smoke: PASS for both current ordered-layout project and legacy-compatible trainer project.
+- Generated trainer outputs from the builder smoke: PASS.
+
+## Locale validation
+
+- `pt-BR` external UTF-8 locale: PASS, including accented Unicode window title.
+- `en-US` external locale: PASS.
+- persisted locale selection through `cw-settings.json`: PASS.
+- missing selected locale: GUI remains responsive and falls back to compiled English: PASS.
+- malformed selected locale JSON: GUI remains responsive and falls back to compiled English: PASS.
+- a synthetic third locale JSON was discovered/applied without recompiling the GUI: PASS.
+
+## Release-package validation
+
+Official package:
+
+```text
+artifacts/Cheat-Wizard-v1.7.0-win64.zip
+```
+
+Expected contents only:
+
+```text
+cw.exe
+cw-gui.exe
+cw-trainer-builder.exe
+README.txt
+SHA256SUMS.txt
+locales/en-US.json
+locales/pt-BR.json
+```
+
+- package manifest SHA-256 verification: PASS.
+- ZIP extracted to an isolated clean-room directory: PASS.
+- clean-room `cw.exe` startup/version: PASS.
+- clean-room `cw-gui.exe` startup and locale discovery: PASS.
+- clean-room `cw-trainer-builder.exe` current + legacy project smoke: PASS.
+- no `.mcptr`, `prod/`, local Trainer executable or local target/project JSON is included in the ZIP.
+
+## Compatibility boundary
+
+The codebase now uses Cheat Wizard/CW consistently through `cw::`, `include/cw/` and `cw_*` build targets. Historical persistence contracts such as the `minice-trainer` identifier and `.mcptr` / `.mcep` / `.mcpm` / `.mces` / `.mcea` formats remain readable only for backward compatibility while CW-native formats are introduced.

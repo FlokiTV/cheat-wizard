@@ -1,0 +1,26 @@
+name: windows-build-test
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Core tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: CLI smoke start
+        shell: pwsh
+        run: '"quit" | .\build\Release\cw.exe'
+      - name: Trainer builder smoke
+        shell: pwsh
+        run: .\tests\TrainerBuilderSmoke.ps1 -Builder .\build\Release\cw-trainer-builder.exe -WorkDir .\build\trainer-smoke

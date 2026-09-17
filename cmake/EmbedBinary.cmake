@@ -1,0 +1,33 @@
+if(NOT DEFINED INPUT OR NOT DEFINED OUTPUT)
+  message(FATAL_ERROR "EmbedBinary.cmake requires -DINPUT=... -DOUTPUT=...")
+endif()
+
+file(READ "${INPUT}" HEXDATA HEX)
+string(LENGTH "${HEXDATA}" HEXLEN)
+
+set(CONTENT "#pragma once\nstatic const unsigned char g_trainer_runtime_bytes[] = {\n")
+set(I 0)
+set(COL 0)
+while(I LESS HEXLEN)
+  string(SUBSTRING "${HEXDATA}" ${I} 2 BYTE)
+  if(COL EQUAL 0)
+    string(APPEND CONTENT "  ")
+  endif()
+  string(APPEND CONTENT "0x${BYTE},")
+  math(EXPR I "${I}+2")
+  math(EXPR COL "${COL}+1")
+  if(COL EQUAL 16)
+    string(APPEND CONTENT "\n")
+    set(COL 0)
+  endif()
+endwhile()
+if(NOT COL EQUAL 0)
+  string(APPEND CONTENT "\n")
+endif()
+string(APPEND CONTENT "};\nstatic const unsigned long long g_trainer_runtime_size = sizeof(g_trainer_runtime_bytes);\n")
+
+# Publish the generated header atomically so parallel build consumers can never
+# observe a partially written TrainerRuntimeBlob.hpp.
+set(TEMP_OUTPUT "${OUTPUT}.tmp")
+file(WRITE "${TEMP_OUTPUT}" "${CONTENT}")
+file(RENAME "${TEMP_OUTPUT}" "${OUTPUT}")

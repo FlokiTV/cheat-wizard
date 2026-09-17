@@ -1,0 +1,32 @@
+{
+  "format": "cheat-wizard-trainer",
+  "version": 1,
+  "trainer": {
+    "name": "My Trainer",
+    "process": "game.exe"
+  },
+  "window": {
+    "width": 620,
+    "height": 460
+  },
+  "visual": {
+    "icon": "",
+    "background": "#09090B",
+    "panel": "#18181B",
+    "surface": "#27272A",
+    "accent": "#2563EB",
+    "text": "#FAFAFA",
+    "muted": "#A1A1AA"
+  },
+  "entries": [
+    {
+      "id": "money",
+      "label": "Money",
+      "profile": "profiles/money.cwptr",
+      "defaultValue": "999999",
+      "showCurrent": true,
+      "allowWrite": true,
+      "allowFreeze": true
+    }
+  ]
+}

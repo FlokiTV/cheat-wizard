@@ -1,0 +1,23 @@
+# Build and IDE output
+build/
+build-*/
+.vs/
+.idea/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Agent/workspace-local context
+/AGENT_CONTEXT.md
+
+# Local runtime/test data (never publish)
+/prod/
+/bin/Trainer.exe
+/bin/*.cwptr
+/bin/*.mcptr
+/bin/*.json
+/cw-settings.json
+/artifacts/ui-review/
+*.log
+*.tmp
