@@ -1,4 +1,4 @@
-# Validation status for Cheat Wizard v1.7.0
+# Validation status for Cheat Wizard v1.7.1
 
 ## Windows-native gates executed for the CW rebrand
 
@@ -54,3 +54,20 @@ The GitHub Release also publishes a `Cheat-Wizard-v1.7.0-win64.zip.sha256` sidec
 ## Compatibility boundary
 
 The codebase now uses Cheat Wizard/CW consistently through `cw::`, `include/cw/` and `cw_*` build targets. Historical persistence contracts such as the `minice-trainer` identifier and `.mcptr` / `.mcep` / `.mcpm` / `.mces` / `.mcea` formats remain readable only for backward compatibility while CW-native formats are introduced.
+
+
+## Post-release antivirus hardening
+
+The official `v1.7.0` GitHub asset was reproduced as a Microsoft Defender ML false-positive candidate: the published `cw.exe` built with the newer GitHub-hosted compiler triggered `Trojan:Win32/Wacatac.B!ml`, while the same source built locally with MSVC 19.43 did not. The release workflow is therefore being hardened before the next tag.
+
+Current release policy:
+
+- GitHub Actions runner: `windows-2022`.
+- Required compiler: VS 2022 MSVC v14.43 / `19.43.x`, explicitly installed and selected with CMake `-T "version=14.43"`.
+- CMake compiler-version assertion: the job fails if the selected compiler is not `19.43.x`.
+- Pre-publication antivirus gate: `scripts/Test-ReleaseWithDefender.ps1`.
+- Defender scan targets: the staged release payload and the final ZIP only.
+- Defender mode: custom scan with `-DisableRemediation`, so a detection remains observable and causes a non-zero result instead of being silently remediated.
+- Security intelligence update is mandatory by default; a failed update or unavailable scanner blocks publication.
+
+The GitHub-hosted `windows-2022` image still evolves over time, so pinning the OS label alone is not considered sufficient. The workflow pins the MSVC minor toolset separately.

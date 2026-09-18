@@ -9,11 +9,47 @@ on:
 
 jobs:
   build-test:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
+      - name: Install pinned MSVC 14.43 toolset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $installPath = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise'
+          $component = 'Microsoft.VisualStudio.Component.VC.14.43.17.13.x86.x64'
+
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Visual Studio Installer not found: $installer"
+          }
+
+          & $installer modify --installPath $installPath --add $component --quiet --norestart --nocache
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installing MSVC 14.43 failed with exit code $LASTEXITCODE"
+          }
       - name: Configure
-        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "version=14.43" -DBUILD_TESTING=ON
+      - name: Verify pinned MSVC toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compilerFile = Get-ChildItem .\build\CMakeFiles -Recurse -Filter CMakeCXXCompiler.cmake |
+            Select-Object -First 1
+          if (-not $compilerFile) {
+            throw 'CMakeCXXCompiler.cmake was not generated.'
+          }
+
+          $match = Select-String -LiteralPath $compilerFile.FullName -Pattern 'set\(CMAKE_CXX_COMPILER_VERSION "([^"]+)"\)'
+          if (-not $match -or $match.Matches.Count -eq 0) {
+            throw "Could not read the MSVC compiler version from $($compilerFile.FullName)"
+          }
+
+          $compilerVersion = $match.Matches[0].Groups[1].Value
+          Write-Host "CMake selected MSVC compiler version: $compilerVersion"
+          if ($compilerVersion -notmatch '^19\.43\.') {
+            throw "CI requires MSVC 19.43.x, got $compilerVersion"
+          }
       - name: Build
         run: cmake --build build --config Release
       - name: Core tests

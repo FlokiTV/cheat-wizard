@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.1 - 2026-09-17
+
+### Release pipeline hardening
+
+- Pin Windows CI and release builds to the `windows-2022` runner and explicitly install/select the VS 2022 MSVC v14.43 toolset (`19.43.x`) instead of inheriting the moving default compiler from GitHub-hosted runner images.
+- Verify the compiler version selected by CMake and fail the job unless it is `19.43.x`.
+- Add a fail-closed Microsoft Defender gate before release upload/publication. The gate updates security intelligence, scans the staged release payload and final ZIP with remediation disabled, and blocks publication on either a detection or scanner error.
+
 ## 1.7.0 - 2026-09-17
 
 ### Cheat Wizard rebrand and locales
