@@ -109,4 +109,15 @@ FastPath limitation:
 - downloaded bytes matched the published SHA-256 exactly;
 - no new `Get-MpThreatDetection` record appeared and no Defender Operational 1116/1117 event referencing `v1.7.2-rc1` appeared during the post-download observation window.
 
-This clears the RC FastPath gate. The final `v1.7.2` release must still be downloaded once after publication because a rebuilt asset has a different hash even when source/toolchain are unchanged.
+This clears the RC FastPath gate.
+
+Final `v1.7.2` browser FastPath gate:
+
+- GitHub Release workflow `35348771204`: PASS, including build, tests, package Defender gate and publication;
+- published final ZIP SHA-256: `d308ae3fa2c9c5c1149e864db961eb36f3e913194c30071da094c529169db481`;
+- Chrome 153 downloaded the final GitHub Release asset through the signed `release-assets.githubusercontent.com` URL;
+- the downloaded ZIP retained ZoneId=3 and its hash matched the published asset exactly;
+- `Get-MpThreatDetection` remained unchanged from the historical v1.7.1 event;
+- no Defender Operational 1116/1117 event referencing `Cheat-Wizard-v1.7.2-win64.zip` appeared in the post-download observation window.
+
+Final browser FastPath gate: PASS.
