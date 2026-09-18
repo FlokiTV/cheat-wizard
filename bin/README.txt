@@ -1,12 +1,17 @@
-Cheat Wizard v1.7.2 Windows x64
+Cheat Wizard v1.7.3 Windows x64
 
 Official releases:
   https://github.com/FlokiTV/cheat-wizard/releases
 
-Executables:
-  cw.exe                  - CLI only: scanner, AOB, pointers, maps and persistence
+Executables in this public package:
   cw-gui.exe              - visual Scanner + Pointers + Trainer project editor
   cw-trainer-builder.exe  - .cwtrainer + .cwptr profiles -> one standalone trainer EXE
+
+CLI note:
+  cw.exe remains available from source builds and CI, but is intentionally not
+  shipped in the prebuilt v1.7.3 ZIP while a Microsoft Defender FastPath
+  false-positive classification remains unresolved. Do not bypass or whitelist
+  Defender to obtain the CLI; build it from the reviewed source if needed.
 
 Locales:
   locales\en-US.json

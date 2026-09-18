@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.3 - 2026-09-18
+
+### Release packaging hotfix
+
+- Confirmed that the final `v1.7.2` GitHub ZIP can still trigger Microsoft Defender `Trojan:Win32/Wacatac.B!ml` on a real user browser download. The 2026-09-18 10:29 detection points specifically to `cw.exe` inside the ZIP; `cw-gui.exe` and `cw-trainer-builder.exe` are not listed in that event.
+- Treat the earlier automated/headless browser acceptance as a false negative: it did not reproduce the cloud/FastPath classification seen in the user's normal browser session and is no longer considered sufficient proof by itself.
+- The prebuilt `v1.7.3` Windows ZIP excludes `cw.exe`. The CLI remains built, tested and available from source, while the downloadable package contains the GUI and Trainer Builder only.
+- This packaging change is intentionally conservative: users are not asked to disable, bypass or whitelist Microsoft Defender. The CLI can return to prebuilt releases after its reputation/classification issue is resolved through normal publisher/security channels.
+
 ## 1.7.2 - 2026-09-18
 
 ### Windows binary heuristic hardening

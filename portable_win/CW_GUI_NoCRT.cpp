@@ -1213,7 +1213,7 @@ static void cmd_freezes(){bool any=false;for(int i=0;i<MAX_FREEZES;++i){if(!g_fr
 static void cmd_unfreeze(const char* s){if(streq(s,"all")){clear_freezes();println("All freezes removed.");return;}u64 x=0;if(!parse_u64(s,x)||x>=MAX_FREEZES){println("Invalid freeze id.");return;}g_freezes[x].active=0;println("Freeze removed.");}
 
 static void show_help(){
-    println("Cheat Wizard v1.7.2 x64 - scanner + scan sessions + AOB + pointer maps");
+    println("Cheat Wizard v1.7.3 x64 - scanner + scan sessions + AOB + pointer maps");
     println("  processes | ps");println("  attach <pid>");println("  attach-name <exe-name>");println("  detach");
     println("  scan <byte|int16|int32|int64|float|double> <value|unknown|unknown-smart>");println("  scan all <value|unknown|unknown-smart>");
     println("  next <value> | next exact <value>");println("  next changed | unchanged | increased | decreased");println("  next bigger <value> | smaller <value>");
@@ -1676,7 +1676,7 @@ static const UiLocaleDef_ g_uiLocaleDefs[] = {
     {"_meta.nativeName", "English"},
     {"app.name", "Cheat Wizard"},
     {"app.tagline", "Memory Tools"},
-    {"app.windowTitle", "Cheat Wizard v1.7.2 - Memory Scanner, Pointers & Trainer Projects"},
+    {"app.windowTitle", "Cheat Wizard v1.7.3 - Memory Scanner, Pointers & Trainer Projects"},
     {"nav.scanner", "Scanner"},
     {"nav.pointers", "Pointers"},
     {"nav.trainer", "Trainer"},
@@ -2918,6 +2918,6 @@ extern "C" void guiCRTStartup(){
     SetProcessDPIAware();g_heap=GetProcessHeap();ui_locale_initialize();strcopy(g_uiStatus,sizeof(g_uiStatus),ui_tr("status.ready"));g_out=CreateFileA("NUL",GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);DWORD tid=0;HANDLE fth=CreateThread(nullptr,0,freeze_thread,nullptr,0,&tid);if(fth)CloseHandle(fth);
     HINSTANCE inst=GetModuleHandleA(nullptr);WNDCLASSEXA_ wc{};wc.cbSize=(UINT)sizeof(wc);wc.style=CS_DBLCLKS_;wc.lpfnWndProc=ui_wndproc;wc.hInstance=inst;wc.hCursor=LoadCursorA(nullptr,(const char*)(uptr)32512);wc.hbrBackground=nullptr;wc.lpszClassName="CheatWizardGuiV2";
     if(!RegisterClassExA(&wc)){MessageBoxA(nullptr,"RegisterClassExA failed.",ui_tr("app.name"),MB_OK_|MB_ICONERROR_);ExitProcess(1);}DWORD style=WS_OVERLAPPED_|WS_CAPTION_|WS_SYSMENU_|WS_MINIMIZEBOX_|WS_MAXIMIZEBOX_|WS_THICKFRAME_;
-    HWND hwnd=CreateWindowExA(0,"CheatWizardGuiV2","Cheat Wizard v1.7.2 - Memory Scanner, Pointers & Trainer Projects",style,70,45,1320,860,nullptr,nullptr,inst,nullptr);if(!hwnd){MessageBoxA(nullptr,"CreateWindowExA failed.",ui_tr("app.name"),MB_OK_|MB_ICONERROR_);ExitProcess(2);}g_hwnd=hwnd;ui_set_localized_window_title();ui_try_dark_titlebar(hwnd);ShowWindow(hwnd,SW_SHOW_);UpdateWindow(hwnd);
+    HWND hwnd=CreateWindowExA(0,"CheatWizardGuiV2","Cheat Wizard v1.7.3 - Memory Scanner, Pointers & Trainer Projects",style,70,45,1320,860,nullptr,nullptr,inst,nullptr);if(!hwnd){MessageBoxA(nullptr,"CreateWindowExA failed.",ui_tr("app.name"),MB_OK_|MB_ICONERROR_);ExitProcess(2);}g_hwnd=hwnd;ui_set_localized_window_title();ui_try_dark_titlebar(hwnd);ShowWindow(hwnd,SW_SHOW_);UpdateWindow(hwnd);
     MSG_ m{};while(GetMessageA(&m,nullptr,0,0)>0){TranslateMessage(&m);DispatchMessageA(&m);}if(g_out)CloseHandle(g_out);ExitProcess(0);
 }

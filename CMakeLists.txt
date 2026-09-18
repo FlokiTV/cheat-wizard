@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(CheatWizard VERSION 1.7.2 LANGUAGES CXX)
+project(CheatWizard VERSION 1.7.3 LANGUAGES CXX)
 
 include(CTest)
 

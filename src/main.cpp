@@ -39,7 +39,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "1.7.2";
+constexpr const char* kVersion = "1.7.3";
 
 std::vector<std::string> split(const std::string& line) {
     std::istringstream input(line);

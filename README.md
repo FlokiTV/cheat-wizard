@@ -1,4 +1,4 @@
-# Cheat Wizard v1.7.0
+# Cheat Wizard v1.7.3
 
 [![Windows build](https://github.com/FlokiTV/cheat-wizard/actions/workflows/windows.yml/badge.svg)](https://github.com/FlokiTV/cheat-wizard/actions/workflows/windows.yml)
 [![Release](https://img.shields.io/github/v/release/FlokiTV/cheat-wizard)](https://github.com/FlokiTV/cheat-wizard/releases/latest)
@@ -11,6 +11,8 @@ Cheat Wizard (CW) is a Windows x64 memory-scanning and pointer-analysis project 
 
 Prebuilt Windows x64 packages are published under [GitHub Releases](https://github.com/FlokiTV/cheat-wizard/releases). Each release includes the ZIP package plus a SHA-256 sidecar file. The package also contains `SHA256SUMS.txt` for its individual files.
 
+Starting with v1.7.3, the public ZIP contains `cw-gui.exe` and `cw-trainer-builder.exe` only. The CLI (`cw.exe`) remains fully available in source builds and CI, but is temporarily excluded from prebuilt release ZIPs because Microsoft Defender FastPath continues to classify that executable as `Trojan:Win32/Wacatac.B!ml` on some browser downloads despite clean source/build audits and local Defender scans. This avoids asking users to bypass or whitelist a security warning.
+
 For the current stable build, use the [latest release](https://github.com/FlokiTV/cheat-wizard/releases/latest). Source builds from `main` are continuously validated by the Windows build/test workflow.
 
 ## Executables and responsibilities
@@ -19,7 +21,7 @@ Cheat Wizard deliberately separates its tools:
 
 | Executable | Responsibility |
 | --- | --- |
-| `cw.exe` | **CLI only**: value scans, AOB, pointer tools, maps and persistence. |
+| `cw.exe` | **CLI only (source build / CI)**: value scans, AOB, pointer tools, maps and persistence. Not included in the prebuilt v1.7.3 ZIP while the Defender FastPath false positive remains unresolved. |
 | `cw-gui.exe` | Visual engineering tool: scanner, watched addresses, write/freeze, pointer discovery/rescan, `.cwptr` profiles and `.cwtrainer` project creation. |
 | `cw-trainer-builder.exe` | Offline packager: `.cwtrainer` + `.cwptr` files -> one standalone trainer EXE. |
 | generated `MyTrainer.exe` | Standalone trainer. No Cheat Wizard/Python/JSON/profile files are required beside it. |
@@ -28,7 +30,7 @@ Cheat Wizard deliberately separates its tools:
 
 ## Rebrand and compatibility
 
-The public product name is **Cheat Wizard**, abbreviated **CW**. Public Windows outputs are `cw.exe`, `cw-gui.exe` and `cw-trainer-builder.exe`.
+The public product name is **Cheat Wizard**, abbreviated **CW**. The source tree builds `cw.exe`, `cw-gui.exe` and `cw-trainer-builder.exe`; the prebuilt public ZIP currently ships `cw-gui.exe` and `cw-trainer-builder.exe`.
 
 The source tree uses `cw::`, `include/cw/` and `cw_*` build targets consistently. New saves use CW-native persistence (`.cwptr`, `.cwchain`, `.cwmap`, `.cwscan`, `.cwaob`, `.cwtrainer`) and CW magics/identifiers. Compatibility with earlier MiniCE releases remains at the import boundary: `.mcptr`, `.mcep`, `.mcpm`, `.mces`, `.mcea` and `minice-trainer` version 1 are still readable.
 
