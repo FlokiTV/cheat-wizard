@@ -1,4 +1,4 @@
-# Validation status for Cheat Wizard v1.7.1
+# Validation status for Cheat Wizard v1.7.2
 
 ## Windows-native gates executed for the CW rebrand
 
@@ -98,4 +98,4 @@ FastPath limitation:
 - the real v1.7.1 browser detection is Defender Operational event 1116 with Origin=`Internet`, Detection Type=`FastPath`, Detection Source=`Downloads e anexos`;
 - copying the known v1.7.1 ZIP and adding Mark-of-the-Web did not reproduce the detection;
 - passing the same known v1.7.1 ZIP through Windows `IAttachmentExecute` completed successfully and also did not reproduce the known browser detection;
-- therefore the only meaningful acceptance gate for the cloud/FastPath issue is a real browser download of the candidate from its final distribution URL.
+- therefore the meaningful acceptance gate for the cloud/FastPath issue is a real browser download of the candidate from its distribution URL.\n\n`v1.7.2-rc1` browser FastPath gate:\n\n- GitHub Release workflow `35347439465`: PASS, including build, CTest, CLI/Trainer Builder smokes, staged package Defender gate and prerelease publication;\n- published RC ZIP SHA-256: `9ca6bb09feee8615e9f71fc4dbb01fbaaa21b0405a77fe0fd3bd906ebfd0391f`;\n- Chrome 153 performed the actual GitHub -> `release-assets.githubusercontent.com` download via its normal download manager;\n- downloaded ZIP retained ZoneId=3 and the signed GitHub release-assets HostUrl;\n- downloaded bytes matched the published SHA-256 exactly;\n- no new `Get-MpThreatDetection` record appeared and no Defender Operational 1116/1117 event referencing `v1.7.2-rc1` appeared during the post-download observation window.\n\nThis clears the RC FastPath gate. The final `v1.7.2` release must still be downloaded once after publication because a rebuilt asset has a different hash even when source/toolchain are unchanged.
