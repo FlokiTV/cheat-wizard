@@ -56,8 +56,10 @@ __declspec(dllimport) void __stdcall Sleep(DWORD);
 }
 
 extern "C" int _fltused = 0;
-extern "C" void* memcpy(void* d, const void* s, usize n) { auto* dd=(u8*)d; auto* ss=(const u8*)s; for(usize i=0;i<n;++i) dd[i]=ss[i]; return d; }
-extern "C" void* memset(void* d, int c, usize n) { auto* dd=(u8*)d; for(usize i=0;i<n;++i) dd[i]=(u8)c; return d; }
+// Volatile byte loops are intentional: optimized MSVC builds must not fold these
+// no-CRT implementations back into calls to memcpy/memset themselves.
+extern "C" void* memcpy(void* d, const void* s, usize n) { auto* dd=(volatile u8*)d; auto* ss=(const volatile u8*)s; for(usize i=0;i<n;++i) dd[i]=ss[i]; return d; }
+extern "C" void* memset(void* d, int c, usize n) { auto* dd=(volatile u8*)d; for(usize i=0;i<n;++i) dd[i]=(u8)c; return d; }
 
 static constexpr DWORD STD_INPUT_HANDLE  = (DWORD)-10;
 static constexpr DWORD STD_OUTPUT_HANDLE = (DWORD)-11;

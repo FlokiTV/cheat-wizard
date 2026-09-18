@@ -11,7 +11,9 @@ struct LARGE_INTEGER_{i64 QuadPart;};
 extern "C"{
 __declspec(dllimport) HANDLE __stdcall GetStdHandle(DWORD);__declspec(dllimport) BOOL __stdcall WriteFile(HANDLE,LPCVOID,DWORD,DWORD*,LPVOID);__declspec(dllimport) HANDLE __stdcall CreateFileA(const char*,DWORD,DWORD,LPVOID,DWORD,DWORD,HANDLE);__declspec(dllimport) BOOL __stdcall ReadFile(HANDLE,LPVOID,DWORD,DWORD*,LPVOID);__declspec(dllimport) BOOL __stdcall CloseHandle(HANDLE);__declspec(dllimport) BOOL __stdcall GetFileSizeEx(HANDLE,LARGE_INTEGER_*);__declspec(dllimport) void __stdcall ExitProcess(u32);__declspec(dllimport) HANDLE __stdcall GetProcessHeap();__declspec(dllimport) LPVOID __stdcall HeapAlloc(HANDLE,DWORD,SIZE_T);__declspec(dllimport) BOOL __stdcall HeapFree(HANDLE,DWORD,LPVOID);__declspec(dllimport) char* __stdcall GetCommandLineA();__declspec(dllimport) BOOL __stdcall SetFilePointerEx(HANDLE,LARGE_INTEGER_,LARGE_INTEGER_*,DWORD);__declspec(dllimport) HANDLE __stdcall BeginUpdateResourceA(const char*,BOOL);__declspec(dllimport) BOOL __stdcall UpdateResourceA(HANDLE,const char*,const char*,WORD,LPVOID,DWORD);__declspec(dllimport) BOOL __stdcall EndUpdateResourceA(HANDLE,BOOL);
 }
-extern "C" void* memcpy(void*d,const void*s,usize n){auto*a=(u8*)d;auto*b=(const u8*)s;for(usize i=0;i<n;++i)a[i]=b[i];return d;}extern "C" void* memset(void*d,int c,usize n){auto*a=(u8*)d;for(usize i=0;i<n;++i)a[i]=(u8)c;return d;}
+// Volatile accesses prevent optimized MSVC builds from folding these no-CRT
+// functions into recursive calls to memcpy/memset.
+extern "C" void* memcpy(void*d,const void*s,usize n){auto*a=(volatile u8*)d;auto*b=(const volatile u8*)s;for(usize i=0;i<n;++i)a[i]=b[i];return d;}extern "C" void* memset(void*d,int c,usize n){auto*a=(volatile u8*)d;for(usize i=0;i<n;++i)a[i]=(u8)c;return d;}
 #include "TrainerRuntimeBlob.hpp"
 static constexpr DWORD STD_OUTPUT_HANDLE=(DWORD)-11,GENERIC_READ=0x80000000UL,GENERIC_WRITE=0x40000000UL,CREATE_ALWAYS=2,OPEN_EXISTING=3,FILE_ATTRIBUTE_NORMAL=0x80,FILE_BEGIN=0;static constexpr usize MAX_ENTRIES=8,MAX_LAYOUT=32,MAX_FILE=16ULL*1024*1024;
 static HANDLE g_out=nullptr,g_heap=nullptr;
