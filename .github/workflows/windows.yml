@@ -16,18 +16,44 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-          $installPath = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise'
+          $installerRoot = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $installer = Join-Path $installerRoot 'setup.exe'
+          $vswhere = Join-Path $installerRoot 'vswhere.exe'
           $component = 'Microsoft.VisualStudio.Component.VC.14.43.17.13.x86.x64'
 
-          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-            throw "Visual Studio Installer not found: $installer"
+          foreach ($required in @($installer, $vswhere)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+              throw "Required Visual Studio installer tool not found: $required"
+            }
           }
 
-          & $installer modify --installPath $installPath --add $component --quiet --norestart --nocache
-          if ($LASTEXITCODE -ne 0) {
-            throw "Installing MSVC 14.43 failed with exit code $LASTEXITCODE"
+          $installPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $installPath) {
+            throw 'Visual Studio 2022 installation not found.'
           }
+
+          Write-Host "Visual Studio installation: $installPath"
+          $arguments = @(
+            'modify',
+            '--installPath', ('"' + $installPath + '"'),
+            '--add', $component,
+            '--quiet',
+            '--norestart',
+            '--nocache'
+          )
+          $process = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) {
+            throw "Installing MSVC 14.43 failed with exit code $($process.ExitCode)"
+          }
+
+          $toolset = Get-ChildItem (Join-Path $installPath 'VC\Tools\MSVC') -Directory |
+            Where-Object Name -Like '14.43.*' |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $toolset) {
+            throw "MSVC 14.43 toolset was not found after installer completed."
+          }
+          Write-Host "Installed MSVC toolset: $($toolset.Name)"
       - name: Configure
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "version=14.43" -DBUILD_TESTING=ON
       - name: Verify pinned MSVC toolchain
