@@ -18,6 +18,7 @@ $ZipChecksumPath = "$ZipPath.sha256"
 
 $required = @(
   (Join-Path $ReleaseDir 'cw-gui.exe'),
+  (Join-Path $ReleaseDir 'cw-engine-builder.exe'),
   (Join-Path $ReleaseDir 'cw-trainer-builder.exe'),
   (Join-Path $RepoRoot 'bin\README.txt'),
   (Join-Path $RepoRoot 'LICENSE'),
@@ -38,6 +39,7 @@ if (Test-Path -LiteralPath $StageDir) {
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir 'locales') | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $ReleaseDir 'cw-gui.exe') -Destination $StageDir
+Copy-Item -LiteralPath (Join-Path $ReleaseDir 'cw-engine-builder.exe') -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $ReleaseDir 'cw-trainer-builder.exe') -Destination $StageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'bin\README.txt') -Destination (Join-Path $StageDir 'README.txt')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination $StageDir

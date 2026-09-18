@@ -1,5 +1,7 @@
 # Architecture
 
+> **Architecture migration in progress:** the current direct-process topology documented below describes the pre-engine split. The accepted target architecture moves all interactive target-memory access into a locally built `cw-engine.exe`, with `cw.exe` and `cw-gui.exe` acting as IPC frontends. See [`ENGINE_ARCHITECTURE.md`](ENGINE_ARCHITECTURE.md).
+
 ```text
 CLI
  |

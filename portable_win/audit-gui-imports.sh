@@ -20,12 +20,21 @@ for line in text:
 expected={
  'user32.dll': {'DrawTextA','FillRect','CreateWindowExA','RegisterClassExA'},
  'gdi32.dll': {'CreateSolidBrush','CreateFontA','BitBlt','RoundRect'},
- 'kernel32.dll': {'OpenProcess','ReadProcessMemory','WriteProcessMemory','VirtualQueryEx'},
 }
 errors=[]
 for dll,syms in expected.items():
     missing=syms-imports.get(dll,set())
     if missing: errors.append(f'{dll}: missing {sorted(missing)}')
+forbidden={
+ 'kernel32.dll': {
+   'OpenProcess','ReadProcessMemory','WriteProcessMemory','VirtualQueryEx',
+   'CreateToolhelp32Snapshot','Process32First','Process32Next',
+   'Module32FirstW','Module32NextW','VirtualProtectEx','CreateRemoteThread',
+ },
+}
+for dll,syms in forbidden.items():
+    present=syms & imports.get(dll,set())
+    if present: errors.append(f'{dll}: forbidden live-process imports {sorted(present)}')
 wrong={'DrawTextA':'gdi32.dll','FillRect':'gdi32.dll','FrameRect':'gdi32.dll'}
 for sym,dll in wrong.items():
     if sym in imports.get(dll,set()): errors.append(f'{sym} incorrectly imported from {dll}')

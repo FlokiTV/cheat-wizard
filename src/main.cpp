@@ -3,6 +3,7 @@
 #include "cw/AobScanner.hpp"
 #include "cw/InstructionDecode.hpp"
 #include "cw/FreezeManager.hpp"
+#include "cw/EngineFrontend.hpp"
 #include "cw/MemoryScanner.hpp"
 #include "cw/MemoryWriter.hpp"
 #include "cw/ProcessManager.hpp"
@@ -342,7 +343,7 @@ void printStats(const cw::ScanStats& stats) {
     std::cout << '\n';
 }
 
-void printUnknownRefinementState(const cw::MemoryScanner& scanner, bool wasSnapshot) {
+void printUnknownRefinementState(const cw::EngineClientScanner& scanner, bool wasSnapshot) {
     if (!wasSnapshot) return;
     if (scanner.unknownSnapshotActive()) {
         std::cout << "Unknown refinement snapshot: " << scanner.candidateCount()
@@ -354,7 +355,7 @@ void printUnknownRefinementState(const cw::MemoryScanner& scanner, bool wasSnaps
     }
 }
 
-void printCandidateCountsByType(const cw::MemoryScanner& scanner) {
+void printCandidateCountsByType(const cw::EngineClientScanner& scanner) {
     const auto counts = scanner.candidateCountsByType();
     const auto types = cw::allValueTypes();
     std::cout << "Candidates by type:";
@@ -376,12 +377,12 @@ void printRefinementStep(const cw::ScanRefinementStep& step, std::size_t index) 
               << std::defaultfloat << '\n';
 }
 
-void printLatestRefinement(const cw::MemoryScanner& scanner) {
+void printLatestRefinement(const cw::EngineClientScanner& scanner) {
     const auto& history = scanner.refinementHistory();
     if (!history.empty()) printRefinementStep(history.back(), history.size() - 1);
 }
 
-void printRefinementHistory(const cw::MemoryScanner& scanner) {
+void printRefinementHistory(const cw::EngineClientScanner& scanner) {
     const auto& history = scanner.refinementHistory();
     if (history.empty()) {
         std::cout << "No refinement steps recorded for this scan yet.\n";
@@ -431,7 +432,7 @@ const char* wizardAction(cw::GuidedGoal goal, cw::ScanMode mode) {
     return "Change the target value, then use: guide changed";
 }
 
-void printWizardSuggestion(const cw::MemoryScanner& scanner, cw::GuidedGoal goal) {
+void printWizardSuggestion(const cw::EngineClientScanner& scanner, cw::GuidedGoal goal) {
     const auto suggestion = scanner.guidedSuggestion(goal);
     if (!suggestion) {
         std::cout << "Wizard: start an Unknown scan first.\n";
@@ -447,7 +448,7 @@ void printWizardSuggestion(const cw::MemoryScanner& scanner, cw::GuidedGoal goal
 }
 
 void printRankedResults(
-    const cw::MemoryScanner& scanner, std::size_t limit, cw::GuidedGoal goal) {
+    const cw::EngineClientScanner& scanner, std::size_t limit, cw::GuidedGoal goal) {
     if (scanner.unknownSnapshotActive()) {
         std::cout << "Ranking is available after the Unknown snapshot is materialized (<= 5,000,000 candidates).\n";
         return;
@@ -527,9 +528,9 @@ void printPointerSettings(const cw::PointerScanOptions& options) {
               << "  root      : " << (options.rootModuleName.empty() ? "any module" : wideToUtf8(options.rootModuleName)) << '\n';
 }
 
-std::atomic<cw::MemoryScanner*> gActiveScanner{nullptr};
-std::atomic<cw::AobScanner*> gActiveAobScanner{nullptr};
-std::atomic<cw::PointerScanner*> gActivePointerScanner{nullptr};
+std::atomic<cw::EngineClientScanner*> gActiveScanner{nullptr};
+std::atomic<cw::EngineClientAobScanner*> gActiveAobScanner{nullptr};
+std::atomic<cw::EngineClientPointerScanner*> gActivePointerScanner{nullptr};
 
 BOOL WINAPI consoleControlHandler(DWORD eventType) {
     if (eventType != CTRL_C_EVENT && eventType != CTRL_BREAK_EVENT) return FALSE;
@@ -549,7 +550,7 @@ BOOL WINAPI consoleControlHandler(DWORD eventType) {
 }
 
 template <typename Fn>
-cw::ScanStats runScanWithUi(cw::MemoryScanner& scanner, Fn&& fn) {
+cw::ScanStats runScanWithUi(cw::EngineClientScanner& scanner, Fn&& fn) {
     auto lastPrint = std::chrono::steady_clock::now();
     bool printedProgress = false;
     scanner.setProgressCallback([&](const cw::ScanProgress& progress) {
@@ -575,7 +576,7 @@ cw::ScanStats runScanWithUi(cw::MemoryScanner& scanner, Fn&& fn) {
 }
 
 template <typename Fn>
-cw::ScanStats runAobScanWithUi(cw::AobScanner& scanner, Fn&& fn) {
+cw::ScanStats runAobScanWithUi(cw::EngineClientAobScanner& scanner, Fn&& fn) {
     auto lastPrint = std::chrono::steady_clock::now();
     bool printedProgress = false;
     scanner.setProgressCallback([&](const cw::ScanProgress& progress) {
@@ -615,7 +616,7 @@ void printPointerStats(const cw::PointerScanStats& stats) {
 }
 
 cw::PointerScanStats runPointerScanWithUi(
-    cw::PointerScanner& scanner,
+    cw::EngineClientPointerScanner& scanner,
     std::uintptr_t target,
     const cw::PointerScanOptions& options)
 {
@@ -641,7 +642,7 @@ cw::PointerScanStats runPointerScanWithUi(
 }
 
 cw::PointerScanStats runPointerCaptureWithUi(
-    cw::PointerScanner& scanner,
+    cw::EngineClientPointerScanner& scanner,
     const cw::PointerScanOptions& options)
 {
     auto lastPrint = std::chrono::steady_clock::now();
@@ -665,25 +666,13 @@ cw::PointerScanStats runPointerCaptureWithUi(
     return stats;
 }
 
-bool refreshPointerContext(
-    cw::ProcessManager& processManager,
-    cw::PointerScanner& pointerScanner,
-    bool printErrors = true)
-{
-    if (!processManager.attached()) return false;
+bool refreshPointerContext(cw::EngineFrontendSession& engine, bool printErrors = true) {
     std::string error;
-    const auto pointerSize = processManager.targetPointerSize(error);
-    if (pointerSize == 0) {
-        if (printErrors) std::cout << "Could not determine target pointer size: " << error << '\n';
-        return false;
+    if (engine.refreshPointerContext(error)) return true;
+    if (printErrors && !error.empty()) {
+        std::cout << "Could not refresh pointer context: " << error << '\n';
     }
-    auto modules = processManager.listModules(error);
-    if (modules.empty() && !error.empty()) {
-        if (printErrors) std::cout << "Could not enumerate modules: " << error << '\n';
-        return false;
-    }
-    pointerScanner.setProcess(processManager.handle(), pointerSize, std::move(modules));
-    return true;
+    return false;
 }
 
 void printPointerChain(const cw::PointerChain& chain, std::size_t index) {
@@ -709,37 +698,9 @@ std::vector<cw::PointerModule> pointerModulesFromProcess(const std::vector<cw::M
     return out;
 }
 
-std::optional<cw::Value> readTypedValueAt(
-    HANDLE process,
-    std::uintptr_t address,
-    cw::ValueType type)
-{
-    if (!process) return std::nullopt;
-    auto readOne = [&](auto tag) -> std::optional<cw::Value> {
-        using T = decltype(tag);
-        T value{};
-        SIZE_T bytesRead = 0;
-        if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(address),
-                               &value, sizeof(value), &bytesRead) ||
-            bytesRead != sizeof(value)) {
-            return std::nullopt;
-        }
-        return cw::Value{value};
-    };
-    switch (type) {
-        case cw::ValueType::Byte: return readOne(std::uint8_t{});
-        case cw::ValueType::Int16: return readOne(std::int16_t{});
-        case cw::ValueType::Int32: return readOne(std::int32_t{});
-        case cw::ValueType::Int64: return readOne(std::int64_t{});
-        case cw::ValueType::Float: return readOne(float{});
-        case cw::ValueType::Double: return readOne(double{});
-    }
-    return std::nullopt;
-}
-
 std::optional<std::uintptr_t> resolveTarget(
     const std::string& token,
-    const cw::MemoryScanner& scanner,
+    const cw::EngineClientScanner& scanner,
     std::string& error)
 {
     if (!token.empty() && token.front() == '#') {
@@ -776,7 +737,7 @@ struct TypedTarget {
 
 std::optional<TypedTarget> resolveTypedTarget(
     const std::string& token,
-    const cw::MemoryScanner& scanner,
+    const cw::EngineClientScanner& scanner,
     std::string& error)
 {
     if (!scanner.hasScan()) {
@@ -818,12 +779,17 @@ int main() {
     SetConsoleCtrlHandler(consoleControlHandler, TRUE);
 
 
-    cw::ProcessManager processManager;
-    cw::MemoryScanner scanner;
+    cw::EngineFrontendSession engine;
+    std::string engineStartError;
+    if (!engine.start(engineStartError)) {
+        std::cerr << "Engine startup failed: " << engineStartError << '\n';
+        return 2;
+    }
+    auto& scanner = engine.scanner();
+    auto& aobScanner = engine.aobScanner();
+    auto& freezer = engine.freezer();
+    auto& pointerScanner = engine.pointerScanner();
     cw::GuidedGoal guidedGoal = cw::GuidedGoal::Generic;
-    cw::AobScanner aobScanner;
-    cw::FreezeManager freezer;
-    cw::PointerScanner pointerScanner;
     cw::PointerScanOptions pointerDefaults;
     std::vector<cw::PointerMapData> pointerMaps;
     std::vector<std::string> pointerMapNames;
@@ -832,8 +798,8 @@ int main() {
     std::optional<cw::PointerProfileData> activePointerProfile;
 
     auto resolveActiveProfile = [&]() -> std::optional<std::tuple<std::uintptr_t, std::size_t, std::size_t>> {
-        if (!processManager.attached() || !activePointerProfile || pointerScanner.chains().empty()) return std::nullopt;
-        if (!refreshPointerContext(processManager, pointerScanner)) return std::nullopt;
+        if (!engine.attached() || !activePointerProfile || pointerScanner.chains().empty()) return std::nullopt;
+        if (!refreshPointerContext(engine)) return std::nullopt;
         if (pointerScanner.chainPointerSize() != 0 && pointerScanner.chainPointerSize() != pointerScanner.pointerSize()) return std::nullopt;
         std::vector<std::uintptr_t> addresses;
         addresses.reserve(pointerScanner.chains().size());
@@ -880,7 +846,7 @@ int main() {
         }
 
         if (command == "processes" || command == "ps") {
-            const auto processes = processManager.listProcesses();
+            const auto processes = engine.listProcesses();
             if (processes.empty()) {
                 std::cout << "No processes found (or snapshot failed).\n";
                 continue;
@@ -900,30 +866,15 @@ int main() {
                 continue;
             }
 
-            freezer.setProcess(nullptr);
-            scanner.setProcess(nullptr);
-            aobScanner.setProcess(nullptr);
             std::wstring name(args[1].begin(), args[1].end());
             std::string error;
-            if (!processManager.attachByName(name, error)) {
+            if (!engine.attachByName(name, error)) {
                 std::cout << "Attach failed: " << error << "\n";
                 continue;
             }
-
-            scanner.setProcess(processManager.handle());
-            aobScanner.setProcess(processManager.handle());
-            aobScanner.setOptions(scanner.options());
-            if (!freezer.setProcess(processManager.handle())) {
-                scanner.setProcess(nullptr);
-                aobScanner.setProcess(nullptr);
-                processManager.detach();
-                std::cout << "Attach failed: could not duplicate process handle for freeze worker.\n";
-                continue;
-            }
-            refreshPointerContext(processManager, pointerScanner, false);
-            std::cout << "Attached to PID " << processManager.pid() << " (read/write).\n";
+            std::cout << "Attached to PID " << engine.pid() << " (read/write).\n";
             std::string pointerError;
-            const auto pointerSize = processManager.targetPointerSize(pointerError);
+            const auto pointerSize = engine.targetPointerSize(pointerError);
             if (pointerSize) std::cout << "Target pointer width: " << pointerSize * 8 << "-bit.\n";
             continue;
         }
@@ -944,46 +895,26 @@ int main() {
                 continue;
             }
 
-            freezer.setProcess(nullptr);
-            scanner.setProcess(nullptr);
-            aobScanner.setProcess(nullptr);
             std::string error;
-            if (!processManager.attach(pid, error)) {
+            if (!engine.attach(pid, error)) {
                 std::cout << "Attach failed: " << error << "\n";
                 continue;
             }
-
-            scanner.setProcess(processManager.handle());
-            aobScanner.setProcess(processManager.handle());
-            aobScanner.setOptions(scanner.options());
-            if (!freezer.setProcess(processManager.handle())) {
-                scanner.setProcess(nullptr);
-                aobScanner.setProcess(nullptr);
-                processManager.detach();
-                std::cout << "Attach failed: could not duplicate process handle for freeze worker.\n";
-                continue;
-            }
-            refreshPointerContext(processManager, pointerScanner, false);
             std::cout << "Attached to PID " << pid << " (read/write).\n";
             std::string pointerError;
-            const auto pointerSize = processManager.targetPointerSize(pointerError);
+            const auto pointerSize = engine.targetPointerSize(pointerError);
             if (pointerSize) std::cout << "Target pointer width: " << pointerSize * 8 << "-bit.\n";
             continue;
         }
 
         if (command == "detach") {
-            freezer.setProcess(nullptr);
-            scanner.setProcess(nullptr);
-            aobScanner.setProcess(nullptr);
-            pointerScanner.setProcess(nullptr, 0, {});
-            processManager.detach();
+            engine.detach();
             std::cout << "Detached. Freeze jobs cleared; stored pointer chains were kept for rescan.\n";
             continue;
         }
 
         if (command == "clear") {
-            scanner.clear();
-            aobScanner.clear();
+            engine.clearScans();
             std::cout << "Value scan and AOB results cleared. Active freezes were kept.\n";
             continue;
         }
@@ -1056,7 +987,7 @@ int main() {
         }
 
         if (command == "scan") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1162,7 +1093,7 @@ int main() {
 
         if (command == "next" || command == "guide") {
             const bool guided = command == "guide";
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1356,7 +1287,7 @@ int main() {
             }
 
             cw::ScanSessionData session;
-            session.sourcePid = processManager.attached() ? static_cast<std::uint64_t>(processManager.pid()) : 0;
+            session.sourcePid = engine.attached() ? static_cast<std::uint64_t>(engine.pid()) : 0;
             session.mixed = scanner.mixedScanActive();
             session.primaryType = scanner.valueType();
             session.options = scanner.options();
@@ -1378,7 +1309,7 @@ int main() {
                 std::cout << "Usage: scan-load <file.cwscan> [force]\n";
                 continue;
             }
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to the process that owns these addresses before loading the scan session.\n";
                 continue;
             }
@@ -1390,7 +1321,7 @@ int main() {
                 continue;
             }
             const bool force = args.size() == 3;
-            const auto currentPid = static_cast<std::uint64_t>(processManager.pid());
+            const auto currentPid = static_cast<std::uint64_t>(engine.pid());
             if (!force && session.sourcePid != 0 && session.sourcePid != currentPid) {
                 std::cout << "Refusing scan session: it was saved from PID " << session.sourcePid
                           << " but the attached process is PID " << currentPid << ".\n"
@@ -1413,7 +1344,7 @@ int main() {
         }
 
         if (command == "watch") {
-            if (!processManager.attached() || !scanner.hasScan()) {
+            if (!engine.attached() || !scanner.hasScan()) {
                 std::cout << "Attach and start a scan first so the value type is known.\n";
                 continue;
             }
@@ -1457,7 +1388,7 @@ int main() {
         }
 
         if (command == "inspect") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1473,20 +1404,19 @@ int main() {
             }
 
             std::array<std::byte, 8> bytes{};
-            SIZE_T bytesRead = 0;
-            const BOOL ok = ReadProcessMemory(
-                processManager.handle(), reinterpret_cast<LPCVOID>(*address),
-                bytes.data(), bytes.size(), &bytesRead);
+            std::size_t bytesRead = 0;
+            DWORD readError = ERROR_SUCCESS;
+            const bool ok = engine.readBytes(*address, bytes.data(), bytes.size(), bytesRead, readError);
             if ((!ok && bytesRead == 0) || bytesRead == 0) {
                 std::cout << "Read failed at 0x" << std::hex << std::uppercase << *address
                           << std::dec << std::nouppercase << ": "
-                          << cw::win32ErrorMessage(GetLastError()) << '\n';
+                          << cw::win32ErrorMessage(readError) << '\n';
                 continue;
             }
 
             std::cout << "Address: 0x" << std::hex << std::uppercase << *address
                       << std::dec << std::nouppercase << " | bytes read: " << bytesRead << "\nRaw: ";
-            for (SIZE_T i = 0; i < bytesRead; ++i) {
+            for (std::size_t i = 0; i < bytesRead; ++i) {
                 const auto byte = static_cast<unsigned int>(std::to_integer<unsigned char>(bytes[i]));
                 std::cout << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << byte;
                 if (i + 1 < bytesRead) std::cout << ' ';
@@ -1523,7 +1453,7 @@ int main() {
         }
 
         if (command == "read-at") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1537,7 +1467,7 @@ int main() {
                 std::cout << "Invalid address or type.\n";
                 continue;
             }
-            const auto value = readTypedValueAt(processManager.handle(), *address, *type);
+            const auto value = engine.readValue(*address, *type);
             if (!value) {
                 std::cout << "Read failed at 0x" << std::hex << std::uppercase << *address
                           << std::dec << std::nouppercase << ".\n";
@@ -1550,7 +1480,7 @@ int main() {
         }
 
         if (command == "write-at") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1569,7 +1499,7 @@ int main() {
                 std::cout << "Invalid value for " << cw::valueTypeName(*type) << ".\n";
                 continue;
             }
-            const auto result = cw::writeValue(processManager.handle(), *address, *value);
+            const auto result = engine.writeValue(*address, *value);
             if (!result.ok) {
                 std::cout << "Write failed: " << cw::win32ErrorMessage(result.error) << '\n';
                 continue;
@@ -1581,7 +1511,7 @@ int main() {
         }
 
         if (command == "freeze-at") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1631,7 +1561,7 @@ int main() {
         }
 
         if (command == "set" || command == "write") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1656,7 +1586,7 @@ int main() {
                 continue;
             }
 
-            const auto result = cw::writeValue(processManager.handle(), typedTarget->address, *value);
+            const auto result = engine.writeValue(typedTarget->address, *value);
             if (!result.ok) {
                 std::cout << "Write failed: " << cw::win32ErrorMessage(result.error) << '\n';
                 continue;
@@ -1668,7 +1598,7 @@ int main() {
         }
 
         if (command == "freeze") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1770,12 +1700,12 @@ int main() {
         }
 
         if (command == "modules") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
             std::string error;
-            const auto modules = processManager.listModules(error);
+            const auto modules = engine.listModules(error);
             if (modules.empty() && !error.empty()) {
                 std::cout << "Module enumeration failed: " << error << '\n';
                 continue;
@@ -1793,7 +1723,7 @@ int main() {
 
         if (command == "aob" || command == "aob-code" || command == "aob-module" ||
             command == "aob-module-code") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1810,7 +1740,7 @@ int main() {
                 }
                 patternStart = 2;
                 std::string error;
-                const auto modules = processManager.listModules(error);
+                const auto modules = engine.listModules(error);
                 if (!error.empty() && modules.empty()) {
                     std::cout << "Module enumeration failed: " << error << '\n';
                     continue;
@@ -1880,8 +1810,8 @@ int main() {
                 continue;
             }
             std::string moduleError;
-            const auto modules = processManager.attached()
-                ? processManager.listModules(moduleError)
+            const auto modules = engine.attached()
+                ? engine.listModules(moduleError)
                 : std::vector<cw::ModuleInfo>{};
             const std::size_t count = (std::min)(limit, matches.size());
             for (std::size_t i = 0; i < count; ++i) {
@@ -1901,7 +1831,7 @@ int main() {
         }
 
         if (command == "aob-resolve" || command == "aresolve") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -1947,12 +1877,12 @@ int main() {
             }
             const auto displacementAddress = *instructionAddress + displacementOffset;
             std::int32_t displacement{};
-            SIZE_T bytesRead{};
-            if (!ReadProcessMemory(processManager.handle(), reinterpret_cast<LPCVOID>(displacementAddress),
-                                   &displacement, sizeof(displacement), &bytesRead) ||
+            std::size_t bytesRead{};
+            DWORD readError = ERROR_SUCCESS;
+            if (!engine.readBytes(displacementAddress, &displacement, sizeof(displacement), bytesRead, readError) ||
                 bytesRead != sizeof(displacement)) {
                 std::cout << "Could not read rel32 displacement: "
-                          << cw::win32ErrorMessage(GetLastError()) << '\n';
+                          << cw::win32ErrorMessage(readError) << '\n';
                 continue;
             }
             const auto resolved = cw::resolveRel32(*instructionAddress, instructionSize, displacement);
@@ -1966,7 +1896,7 @@ int main() {
                       << std::dec << " = " << displacement
                       << " | target: 0x" << std::hex << std::uppercase << *resolved;
             std::string moduleError;
-            const auto modules = processManager.listModules(moduleError);
+            const auto modules = engine.listModules(moduleError);
             for (const auto& module : modules) {
                 if (module.contains(*resolved)) {
                     std::cout << "  " << wideToUtf8(module.name) << "+0x" << (*resolved - module.base);
@@ -1978,7 +1908,7 @@ int main() {
         }
 
         if (command == "aob-decode" || command == "adecode") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -2002,15 +1932,15 @@ int main() {
             if (!instructionAddress) continue;
 
             std::array<std::byte, 16> bytes{};
-            SIZE_T bytesRead{};
-            if (!ReadProcessMemory(processManager.handle(), reinterpret_cast<LPCVOID>(*instructionAddress),
-                                   bytes.data(), bytes.size(), &bytesRead) || bytesRead < 2) {
+            std::size_t bytesRead{};
+            DWORD readError = ERROR_SUCCESS;
+            if (!engine.readBytes(*instructionAddress, bytes.data(), bytes.size(), bytesRead, readError) || bytesRead < 2) {
                 std::cout << "Could not read instruction bytes: "
-                          << cw::win32ErrorMessage(GetLastError()) << '\n';
+                          << cw::win32ErrorMessage(readError) << '\n';
                 continue;
             }
             std::string pointerError;
-            const auto pointerSize = processManager.targetPointerSize(pointerError);
+            const auto pointerSize = engine.targetPointerSize(pointerError);
             const bool x64 = pointerSize == 8;
             const auto decoded = cw::decodeCommonRelativeInstruction(
                 *instructionAddress, std::span<const std::byte>(bytes.data(), bytesRead), x64);
@@ -2028,7 +1958,7 @@ int main() {
                       << " | " << (decoded->indirect ? "slot" : "target")
                       << "=0x" << decoded->target;
             std::string moduleError;
-            const auto modules = processManager.listModules(moduleError);
+            const auto modules = engine.listModules(moduleError);
             for (const auto& module : modules) {
                 if (module.contains(decoded->target)) {
                     std::cout << "  " << wideToUtf8(module.name) << "+0x"
@@ -2040,17 +1970,16 @@ int main() {
 
             if (decoded->indirect && (pointerSize == 4 || pointerSize == 8)) {
                 std::uintptr_t destination{};
-                SIZE_T got{};
+                std::size_t got{};
+                DWORD pointerReadError = ERROR_SUCCESS;
                 bool ok = false;
                 if (pointerSize == 4) {
                     std::uint32_t value{};
-                    ok = ReadProcessMemory(processManager.handle(), reinterpret_cast<LPCVOID>(decoded->target),
-                                           &value, sizeof(value), &got) && got == sizeof(value);
+                    ok = engine.readBytes(decoded->target, &value, sizeof(value), got, pointerReadError) && got == sizeof(value);
                     destination = value;
                 } else {
                     std::uint64_t value{};
-                    ok = ReadProcessMemory(processManager.handle(), reinterpret_cast<LPCVOID>(decoded->target),
-                                           &value, sizeof(value), &got) && got == sizeof(value);
+                    ok = engine.readBytes(decoded->target, &value, sizeof(value), got, pointerReadError) && got == sizeof(value);
                     destination = static_cast<std::uintptr_t>(value);
                 }
                 if (ok) {
@@ -2075,7 +2004,7 @@ int main() {
                 std::cout << "Usage: aob-save <file.cwaob>\n";
                 continue;
             }
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to the process that produced the AOB results before saving.\n";
                 continue;
             }
@@ -2084,7 +2013,7 @@ int main() {
                 continue;
             }
             std::string moduleError;
-            const auto modules = processManager.listModules(moduleError);
+            const auto modules = engine.listModules(moduleError);
             if (modules.empty() && !moduleError.empty()) {
                 std::cout << "Module enumeration failed: " << moduleError << '\n';
                 continue;
@@ -2123,7 +2052,7 @@ int main() {
                 std::cout << "Usage: aob-load <file.cwaob>\n";
                 continue;
             }
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first so module-relative matches can be rebased.\n";
                 continue;
             }
@@ -2134,7 +2063,7 @@ int main() {
                 continue;
             }
             std::string moduleError;
-            const auto modules = processManager.listModules(moduleError);
+            const auto modules = engine.listModules(moduleError);
             if (modules.empty() && !moduleError.empty()) {
                 std::cout << "Module enumeration failed: " << moduleError << '\n';
                 continue;
@@ -2177,7 +2106,7 @@ int main() {
                 std::cout << "Usage: aob-rerun <file.cwaob>\n";
                 continue;
             }
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -2194,7 +2123,7 @@ int main() {
                                         session.scope == cw::AobSearchScope::ModuleExecutable;
             if (moduleRestricted) {
                 std::string moduleError;
-                const auto modules = processManager.listModules(moduleError);
+                const auto modules = engine.listModules(moduleError);
                 const auto wanted = lower(session.moduleName);
                 const cw::ModuleInfo* found = nullptr;
                 for (const auto& module : modules) {
@@ -2284,7 +2213,7 @@ int main() {
         }
 
         if (command == "pointer-scan" || command == "pscan") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -2324,7 +2253,7 @@ int main() {
                 continue;
             }
 
-            if (!refreshPointerContext(processManager, pointerScanner)) continue;
+            if (!refreshPointerContext(engine)) continue;
             std::cout << "Building pointer index and searching chains to 0x"
                       << std::hex << std::uppercase << *target << std::dec << std::nouppercase
                       << " (depth " << options.maxDepth << ", +max 0x"
@@ -2361,7 +2290,7 @@ int main() {
         }
 
         if (command == "pointer-resolve" || command == "presolve") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -2376,7 +2305,7 @@ int main() {
                 std::cout << "Pointer chain index out of range.\n";
                 continue;
             }
-            if (!refreshPointerContext(processManager, pointerScanner)) continue;
+            if (!refreshPointerContext(engine)) continue;
             // refreshPointerContext intentionally preserves chains.
             if (pointerScanner.chainPointerSize() != 0 &&
                 pointerScanner.chainPointerSize() != pointerScanner.pointerSize()) {
@@ -2396,7 +2325,7 @@ int main() {
         }
 
         if (command == "pointer-rescan" || command == "prescan") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -2414,7 +2343,7 @@ int main() {
                 std::cout << targetError << '\n';
                 continue;
             }
-            if (!refreshPointerContext(processManager, pointerScanner)) continue;
+            if (!refreshPointerContext(engine)) continue;
             if (pointerScanner.chainPointerSize() != 0 &&
                 pointerScanner.chainPointerSize() != pointerScanner.pointerSize()) {
                 std::cout << "Stored chains are " << pointerScanner.chainPointerSize() * 8
@@ -2464,9 +2393,9 @@ int main() {
                 std::cout << "Pointer load failed: " << error << '\n';
                 continue;
             }
-            if (processManager.attached()) {
+            if (engine.attached()) {
                 std::string pointerError;
-                const auto currentPointerSize = processManager.targetPointerSize(pointerError);
+                const auto currentPointerSize = engine.targetPointerSize(pointerError);
                 if (currentPointerSize != 0 && currentPointerSize != data.pointerSize) {
                     std::cout << "Refusing pointer file: file is " << data.pointerSize * 8
                               << "-bit but attached target is " << currentPointerSize * 8 << "-bit.\n";
@@ -2491,9 +2420,9 @@ int main() {
                 std::cout << "PROFILE_ERR load_failed " << error << '\n';
                 continue;
             }
-            if (processManager.attached()) {
+            if (engine.attached()) {
                 std::string pointerError;
-                const auto currentPointerSize = processManager.targetPointerSize(pointerError);
+                const auto currentPointerSize = engine.targetPointerSize(pointerError);
                 if (currentPointerSize != 0 && currentPointerSize != data.pointerSize) {
                     std::cout << "PROFILE_ERR pointer_width_mismatch\n";
                     continue;
@@ -2515,7 +2444,7 @@ int main() {
             if (!resolved) { std::cout << "PROFILE_ERR unresolved\n"; continue; }
             const auto [address, agreeing, resolvedCount] = *resolved;
             if (agreeing * 2 <= resolvedCount) { std::cout << "PROFILE_ERR ambiguous agree=" << agreeing << '/' << resolvedCount << '\n'; continue; }
-            const auto value = readTypedValueAt(processManager.handle(), address, activePointerProfile->type);
+            const auto value = engine.readValue(address, activePointerProfile->type);
             if (!value) { std::cout << "PROFILE_ERR unreadable\n"; continue; }
             std::cout << "PROFILE_OK address=0x" << std::hex << std::uppercase << address
                       << std::dec << std::nouppercase << " type=" << cw::valueTypeName(activePointerProfile->type)
@@ -2533,7 +2462,7 @@ int main() {
             if (agreeing * 2 <= resolvedCount) { std::cout << "PROFILE_ERR ambiguous agree=" << agreeing << '/' << resolvedCount << '\n'; continue; }
             const auto value = cw::parseValue(activePointerProfile->type, args[1]);
             if (!value) { std::cout << "PROFILE_ERR bad_value\n"; continue; }
-            const auto result = cw::writeValue(processManager.handle(), address, *value);
+            const auto result = engine.writeValue(address, *value);
             if (!result.ok) { std::cout << "PROFILE_ERR write_failed\n"; continue; }
             std::cout << "PROFILE_OK written address=0x" << std::hex << std::uppercase << address
                       << std::dec << std::nouppercase << " agree=" << agreeing << '/' << resolvedCount << '\n';
@@ -2563,7 +2492,7 @@ int main() {
         }
 
         if (command == "pmap-capture" || command == "pmcapture") {
-            if (!processManager.attached()) {
+            if (!engine.attached()) {
                 std::cout << "Attach to a process first.\n";
                 continue;
             }
@@ -2586,7 +2515,7 @@ int main() {
                 std::cout << "max_entries must be between 1 and 16000000.\n";
                 continue;
             }
-            if (!refreshPointerContext(processManager, pointerScanner)) continue;
+            if (!refreshPointerContext(engine)) continue;
             auto options = pointerDefaults;
             options.maxIndexEntries = maxEntries;
             std::cout << "Capturing pointer map to '" << args[1] << "' for target 0x"
@@ -2768,8 +2697,8 @@ int main() {
         }
 
         if (command == "status") {
-            if (!processManager.attached()) std::cout << "Process: <detached>\n";
-            else std::cout << "Process PID: " << processManager.pid() << '\n';
+            if (!engine.attached()) std::cout << "Process: <detached>\n";
+            else std::cout << "Process PID: " << engine.pid() << '\n';
 
             if (!scanner.hasScan()) {
                 std::cout << "Scan: <none>\n";
@@ -2805,6 +2734,6 @@ int main() {
     scanner.setProcess(nullptr);
     aobScanner.setProcess(nullptr);
     pointerScanner.setProcess(nullptr, 0, {});
-    processManager.detach();
+    engine.detach();
     return 0;
 }

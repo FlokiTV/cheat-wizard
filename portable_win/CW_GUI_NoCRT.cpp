@@ -15,6 +15,7 @@ using usize = unsigned long long;
 using uptr = unsigned long long;
 
 #include "MdiIconMasks.hpp"
+#include "GuiEngineBridge.hpp"
 using HANDLE = void*;
 using PVOID = void*;
 using LPCVOID = const void*;
@@ -53,17 +54,8 @@ __declspec(dllimport) HANDLE __stdcall GetProcessHeap();
 __declspec(dllimport) LPVOID __stdcall HeapAlloc(HANDLE, DWORD, SIZE_T);
 __declspec(dllimport) LPVOID __stdcall HeapReAlloc(HANDLE, DWORD, LPVOID, SIZE_T);
 __declspec(dllimport) BOOL __stdcall HeapFree(HANDLE, DWORD, LPVOID);
-__declspec(dllimport) HANDLE __stdcall CreateToolhelp32Snapshot(DWORD, DWORD);
-__declspec(dllimport) BOOL __stdcall Process32First(HANDLE, LPVOID);
-__declspec(dllimport) BOOL __stdcall Process32Next(HANDLE, LPVOID);
-__declspec(dllimport) BOOL __stdcall Module32FirstW(HANDLE, LPVOID);
-__declspec(dllimport) BOOL __stdcall Module32NextW(HANDLE, LPVOID);
 __declspec(dllimport) BOOL __stdcall IsWow64Process(HANDLE, BOOL*);
-__declspec(dllimport) HANDLE __stdcall OpenProcess(DWORD, BOOL, DWORD);
 __declspec(dllimport) BOOL __stdcall CloseHandle(HANDLE);
-__declspec(dllimport) SIZE_T __stdcall VirtualQueryEx(HANDLE, LPCVOID, LPVOID, SIZE_T);
-__declspec(dllimport) BOOL __stdcall ReadProcessMemory(HANDLE, LPCVOID, LPVOID, SIZE_T, SIZE_T*);
-__declspec(dllimport) BOOL __stdcall WriteProcessMemory(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE_T*);
 __declspec(dllimport) void __stdcall GetNativeSystemInfo(LPVOID);
 __declspec(dllimport) HANDLE __stdcall CreateThread(LPVOID, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, DWORD*);
 __declspec(dllimport) void __stdcall Sleep(DWORD);
@@ -302,6 +294,7 @@ static usize g_rankAnchorCount = 0;
 static ValueType g_type = ValueType::Invalid;
 static bool g_alignmentByte = false;
 static FreezeEntry g_freezes[MAX_FREEZES] = {};
+static u64 g_freezeIds[MAX_FREEZES] = {};
 static PointerEntry* g_pointerIndex = nullptr;
 static usize g_pointerCount = 0;
 static usize g_pointerCap = 0;
@@ -399,7 +392,6 @@ static bool readable(DWORD p){ if(p&PAGE_GUARD)return false; DWORD x=p&0xFF; ret
 static bool writable(DWORD p){ if(p&PAGE_GUARD)return false; DWORD x=p&0xFF; return x==PAGE_READWRITE||x==PAGE_WRITECOPY||x==PAGE_EXECUTE_READWRITE||x==PAGE_EXECUTE_WRITECOPY; }
 static bool executable(DWORD p){ if(p&PAGE_GUARD)return false; DWORD x=p&0xFF; return x==0x10||x==PAGE_EXECUTE_READ||x==PAGE_EXECUTE_READWRITE||x==PAGE_EXECUTE_WRITECOPY; }
 
-static usize scan_start_offset(uptr base,usize alignment);
 static void clear_results(){ g_resultCount=0;memzero(g_resultTypeCounts,sizeof(g_resultTypeCounts));g_rankedCount=0;g_rankingDirty=true; }
 static bool reserve_results(usize need){ if(need<=g_resultCap)return true; usize nc=g_resultCap?g_resultCap:4096; while(nc<need){usize next=nc*2;if(next<nc){nc=need;break;}nc=next;if(nc>MAX_RESULTS){nc=MAX_RESULTS;break;}} if(nc<need)return false; SIZE_T bytes=nc*(SIZE_T)sizeof(Result); void* p=g_results?HeapReAlloc(g_heap,0,g_results,bytes):HeapAlloc(g_heap,0,bytes); if(!p)return false;g_results=(Result*)p;g_resultCap=nc;return true; }
 static bool add_result(uptr addr,const u8* raw,u8 sz,ValueType t){ if(g_resultCount>=MAX_RESULTS)return false; if(!reserve_results(g_resultCount+1))return false; Result& r=g_results[g_resultCount++];r.address=addr;memzero(r.previous,8);memcopy(r.previous,raw,sz);r.type=(u8)t;int ti=value_type_index(t);if(ti>=0)++g_resultTypeCounts[ti];return true; }
@@ -413,117 +405,14 @@ static bool add_aob(uptr a){if(g_aobCount>=MAX_AOB_RESULTS)return false;if(!rese
 static int hex_nibble(char c){if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;if(c>='A'&&c<='F')return c-'A'+10;return -1;}
 static bool parse_aob_token(const char* in,u8& value,u8& mask){if(!in||!*in)return false;const char* t=in;usize len=cstrlen(t);if(len&&(*t=='"'||*t=='\'')){++t;--len;}if(len&&len>0&&(t[len-1]=='"'||t[len-1]=='\''))--len;if((len==1&&t[0]=='?')||(len==2&&t[0]=='?'&&t[1]=='?')){value=0;mask=0;return true;}if(len!=2)return false;bool hw=t[0]=='?',lw=t[1]=='?';int hi=hw?0:hex_nibble(t[0]);int lo=lw?0:hex_nibble(t[1]);if((!hw&&hi<0)||(!lw&&lo<0))return false;value=(u8)((hi<<4)|lo);mask=(u8)((hw?0:0xF0)|(lw?0:0x0F));return true;}
 static bool aob_match(const u8* p,const u8* values,const u8* masks,usize count){for(usize i=0;i<count;++i)if((p[i]&masks[i])!=(values[i]&masks[i]))return false;return true;}
-static bool scan_aob_pattern(const u8* values,const u8* masks,usize plen,bool execOnly,const char* moduleName,bool remember){
-    if(!g_process){println("Attach to a process first.");return false;}if(!values||!masks||plen==0||plen>MAX_AOB_PATTERN){println("AOB pattern length is invalid.");return false;}
-    g_aobCount=0;
-    SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);uptr min=(uptr)si.lpMinimumApplicationAddress,max=(uptr)si.lpMaximumApplicationAddress;
-    if(moduleName){if(!refresh_modules())return false;bool found=false;for(usize i=0;i<g_moduleCount;++i)if(strieq(g_modules[i].name,moduleName)){min=g_modules[i].base;max=g_modules[i].base+(uptr)g_modules[i].size;found=true;break;}if(!found){println("Module not found.");return false;}}
-    usize alloc=SCAN_CHUNK+(plen?plen-1:0);u8* buf=(u8*)HeapAlloc(g_heap,0,alloc);if(!buf){println("Out of memory.");return false;}
-    uptr cur=min;u64 total=0;bool truncated=false;
-    while(cur<max&&!truncated){MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx((HANDLE)g_process,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;uptr base=(uptr)mbi.BaseAddress,end=base+(uptr)mbi.RegionSize;if(end<=cur)break;uptr cb=base<min?min:base,ce=end>max?max:end;
-        if(cb<ce&&mbi.State==MEM_COMMIT&&readable(mbi.Protect)&&(!execOnly||executable(mbi.Protect))){for(uptr p=cb;p<ce&&!truncated;){usize primary=(usize)((ce-p)>SCAN_CHUNK?SCAN_CHUNK:(ce-p));usize extra=(p+primary<ce&&plen>1)?plen-1:0;usize toRead=primary+extra;if(p+toRead>ce)toRead=(usize)(ce-p);SIZE_T got=0;ReadProcessMemory((HANDLE)g_process,(LPCVOID)p,buf,toRead,&got);total+=got;if(got>=plen){usize starts=primary;if(starts>(usize)got)starts=(usize)got;usize maxStarts=(usize)got-plen+1;if(starts>maxStarts)starts=maxStarts;for(usize off=0;off<starts;++off){if(aob_match(buf+off,values,masks,plen)){if(!add_aob(p+off)){truncated=true;break;}}}}p+=primary;}}
-        cur=end;
-    }
-    HeapFree(g_heap,0,buf);
-    if(remember){g_aobPatternCount=plen;for(usize i=0;i<plen;++i){g_aobPatternValues[i]=values[i];g_aobPatternMasks[i]=masks[i];}g_aobScope=(moduleName?2u:0u)+(execOnly?1u:0u);strcopy(g_aobModule,sizeof(g_aobModule),moduleName?moduleName:"");}
-    char b[256];usize n=0;append_str(b,sizeof(b),n,"AOB matches: ");append_u64_dec(b,sizeof(b),n,g_aobCount);append_str(b,sizeof(b),n," | read: ");append_u64_dec(b,sizeof(b),n,total/(1024*1024));append_str(b,sizeof(b),n," MiB");if(truncated)append_str(b,sizeof(b),n," [TRUNCATED]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);return true;
-}
-static bool scan_aob_tokens(char** tok,int start,int count,bool execOnly,const char* moduleName){
-    if(start>=count){println("Missing AOB pattern.");return false;}usize tokenCount=(usize)(count-start);if(tokenCount==0||tokenCount>MAX_AOB_PATTERN){println("AOB pattern length is invalid.");return false;}
-    u8* patternMem=(u8*)HeapAlloc(g_heap,0,tokenCount*2);if(!patternMem){println("Out of memory.");return false;}u8* values=patternMem;u8* masks=patternMem+tokenCount;usize plen=0;
-    for(int i=start;i<count;++i){if(!parse_aob_token(tok[i],values[plen],masks[plen])){HeapFree(g_heap,0,patternMem);println("Invalid AOB token. Use hex bytes, ??, A? or ?F.");return false;}++plen;}
-    bool ok=scan_aob_pattern(values,masks,plen,execOnly,moduleName,true);HeapFree(g_heap,0,patternMem);return ok;
-}
-static void cmd_aob_results(const char* limitStr){usize limit=50;if(limitStr){u64 x=0;if(!parse_u64(limitStr,x)){println("Invalid limit.");return;}limit=(usize)x;}if(!g_aobCount){println("No stored AOB matches.");return;}refresh_modules();usize count=g_aobCount<limit?g_aobCount:limit;for(usize i=0;i<count;++i){char b[420];usize n=0;append_str(b,sizeof(b),n,"[A#");append_u64_dec(b,sizeof(b),n,i);append_str(b,sizeof(b),n,"] ");append_hex(b,sizeof(b),n,g_aobResults[i]);for(usize m=0;m<g_moduleCount;++m){uptr base=g_modules[m].base,end=base+(uptr)g_modules[m].size;if(g_aobResults[i]>=base&&g_aobResults[i]<end){append_str(b,sizeof(b),n,"  ");append_str(b,sizeof(b),n,g_modules[m].name);append_str(b,sizeof(b),n,"+");append_hex(b,sizeof(b),n,g_aobResults[i]-base);break;}}append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);}char b[120];usize n=0;append_str(b,sizeof(b),n,"Total: ");append_u64_dec(b,sizeof(b),n,g_aobCount);append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);}
-static bool parse_aob_target(const char* s,uptr& address){
-    if(!s||!*s)return false;
-    if(*s=='#'){u64 idx=0;if(!parse_u64(s+1,idx)||idx>=g_aobCount)return false;address=g_aobResults[idx];return true;}
-    u64 value=0;if(!parse_u64(s,value))return false;address=(uptr)value;return true;
-}
-static void cmd_aob_resolve(const char* targetStr,const char* dispStr,const char* sizeStr){
-    if(!g_process){println("Attach to a process first.");return;}
-    uptr instruction=0;if(!parse_aob_target(targetStr,instruction)){println("Invalid AOB target. Use #0, #1, ... or an address.");return;}
-    u64 dispOff=0,instSize=0;if(!parse_u64(dispStr,dispOff)||!parse_u64(sizeStr,instSize)){println("Invalid displacement offset/instruction size.");return;}
-    if(instSize<4||instSize>64||dispOff+4>instSize){println("Require instruction_size 4..64 and disp_offset+4 <= instruction_size.");return;}
-    if(instruction>~(uptr)0-(uptr)dispOff||instruction>~(uptr)0-(uptr)instSize){println("Address overflow.");return;}
-    i32 displacement=0;SIZE_T got=0;uptr dispAddr=instruction+(uptr)dispOff;
-    if(!ReadProcessMemory((HANDLE)g_process,(LPCVOID)dispAddr,&displacement,4,&got)||got!=4){print_last_error("Could not read rel32 displacement");return;}
-    uptr next=instruction+(uptr)instSize,target=0;
-    if(displacement>=0){uptr amount=(uptr)(u32)displacement;if(~(uptr)0-next<amount){println("rel32 target overflow.");return;}target=next+amount;}
-    else{u64 magnitude=(u64)(-(i64)displacement);if(next<(uptr)magnitude){println("rel32 target underflow.");return;}target=next-(uptr)magnitude;}
-    refresh_modules();char b[420];usize n=0;append_str(b,sizeof(b),n,"Instruction ");append_hex(b,sizeof(b),n,instruction);append_str(b,sizeof(b),n," | rel32 @ +");append_hex(b,sizeof(b),n,dispOff);append_str(b,sizeof(b),n," = ");append_i64_dec(b,sizeof(b),n,(i64)displacement);append_str(b,sizeof(b),n," | target ");append_hex(b,sizeof(b),n,target);
-    for(usize m=0;m<g_moduleCount;++m){uptr base=g_modules[m].base,end=base+(uptr)g_modules[m].size;if(target>=base&&target<end){append_str(b,sizeof(b),n,"  ");append_str(b,sizeof(b),n,g_modules[m].name);append_str(b,sizeof(b),n,"+");append_hex(b,sizeof(b),n,target-base);break;}}
-    append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);
-}
-
-static bool snapshot_file_valid(){return g_snapshotFile&&(uptr)g_snapshotFile!=INVALID_HANDLE_BITS;}
-static bool snapshot_seek(u64 offset){
-    if(!snapshot_file_valid()||offset>0x7FFFFFFFFFFFFFFFULL)return false;
-    LONG high=(LONG)(u32)(offset>>32);LONG low=(LONG)(u32)offset;SetLastError(0);
-    DWORD result=SetFilePointer(g_snapshotFile,low,&high,FILE_BEGIN);
-    return result!=INVALID_SET_FILE_POINTER_||GetLastError()==0;
-}
-static bool snapshot_read_at(u64 offset,void* data,usize size){
-    if(!size)return true;if(!data||!snapshot_seek(offset))return false;u8* p=(u8*)data;
-    while(size){DWORD chunk=size>0x40000000ULL?0x40000000UL:(DWORD)size;DWORD got=0;if(!ReadFile(g_snapshotFile,p,chunk,&got,nullptr)||got!=chunk)return false;p+=got;size-=got;}return true;
-}
-static bool snapshot_write_at(u64 offset,const void* data,usize size){
-    if(!size)return true;if(!data||!snapshot_seek(offset))return false;const u8* p=(const u8*)data;
-    while(size){DWORD chunk=size>0x40000000ULL?0x40000000UL:(DWORD)size;DWORD wrote=0;if(!WriteFile(g_snapshotFile,p,chunk,&wrote,nullptr)||wrote!=chunk)return false;p+=wrote;size-=wrote;}return true;
-}
-static bool snapshot_open(){
-    if(snapshot_file_valid())return true;char dir[260]{};char path[260]{};DWORD n=GetTempPathA((DWORD)sizeof(dir),dir);if(!n||n>=sizeof(dir))return false;
-    if(!GetTempFileNameA(dir,"MCE",0,path))return false;
-    HANDLE h=CreateFileA(path,GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ_|FILE_SHARE_WRITE_|FILE_SHARE_DELETE_,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_TEMPORARY_|FILE_FLAG_DELETE_ON_CLOSE_|FILE_FLAG_SEQUENTIAL_SCAN_,nullptr);
-    if((uptr)h==INVALID_HANDLE_BITS){DeleteFileA(path);return false;}g_snapshotFile=h;g_snapshotBytes=0;return true;
-}
-static void snapshot_close(){if(snapshot_file_valid())CloseHandle(g_snapshotFile);g_snapshotFile=nullptr;}
-static bool snapshot_append(const void* data,usize size,u64& offset){if(!snapshot_open()||size>~(u64)0-g_snapshotBytes)return false;offset=g_snapshotBytes;if(!snapshot_write_at(offset,data,size))return false;g_snapshotBytes+=(u64)size;return true;}
-static bool reserve_snapshot_blocks(usize need){
-    if(need<=g_snapshotCap)return true;usize nc=g_snapshotCap?g_snapshotCap:256;while(nc<need){usize next=nc*2;if(next<=nc){nc=need;break;}nc=next;}if(nc>~(usize)0/sizeof(SnapshotBlock_))return false;
-    SIZE_T bytes=nc*(SIZE_T)sizeof(SnapshotBlock_);void* p=g_snapshotBlocks?HeapReAlloc(g_heap,0,g_snapshotBlocks,bytes):HeapAlloc(g_heap,0,bytes);if(!p)return false;g_snapshotBlocks=(SnapshotBlock_*)p;for(usize i=g_snapshotCap;i<nc;++i)memzero(&g_snapshotBlocks[i],sizeof(SnapshotBlock_));g_snapshotCap=nc;return true;
-}
 static void clear_snapshot(){
-    for(usize i=0;i<g_snapshotCount;++i){
-        for(int ti=0;ti<6;++ti)if(g_snapshotBlocks[i].masks[ti])HeapFree(g_heap,0,g_snapshotBlocks[i].masks[ti]);
-        memzero(&g_snapshotBlocks[i],sizeof(SnapshotBlock_));
-    }
-    snapshot_close();g_snapshotCount=0;g_snapshotBytes=0;g_snapshotCandidates=0;memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));g_snapshotActive=false;
+    for(usize i=0;i<g_snapshotCount;++i){for(int ti=0;ti<6;++ti)if(g_snapshotBlocks[i].masks[ti])HeapFree(g_heap,0,g_snapshotBlocks[i].masks[ti]);memzero(&g_snapshotBlocks[i],sizeof(SnapshotBlock_));}
+    if(g_snapshotFile&&(uptr)g_snapshotFile!=INVALID_HANDLE_BITS)CloseHandle(g_snapshotFile);g_snapshotFile=nullptr;g_snapshotCount=0;g_snapshotBytes=0;g_snapshotCandidates=0;memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));g_snapshotActive=false;
 }
-static usize candidate_count_for(uptr base,usize available,usize candidateBytes,usize sz){
-    if(!sz||available<sz||candidateBytes==0)return 0;
-    candidateBytes=candidateBytes<available?candidateBytes:available;
-    usize step=g_alignmentByte?1:sz;
-    usize start=scan_start_offset(base,sz);
-    if(start>=candidateBytes||start+sz>available)return 0;
-    usize maxAvail=available-sz,maxCandidate=candidateBytes-1,maxStart=maxAvail<maxCandidate?maxAvail:maxCandidate;
-    return 1+(maxStart-start)/step;
-}
-static bool add_snapshot_block(uptr base,const u8* data,usize size,usize candidateBytes,ValueType snapshotType){
-    if(!data||!size||!reserve_snapshot_blocks(g_snapshotCount+1))return false;
-    u64 fileOffset=0;if(!snapshot_append(data,size,fileOffset))return false;
-    SnapshotBlock_& b=g_snapshotBlocks[g_snapshotCount++];memzero(&b,sizeof(b));b.base=base;b.fileOffset=fileOffset;b.size=size;b.candidateBytes=candidateBytes<size?candidateBytes:size;
-    const ValueType types[6]={ValueType::Byte,ValueType::Int16,ValueType::Int32,ValueType::Int64,ValueType::Float,ValueType::Double};
-    const usize sizes[6]={1,2,4,8,4,8};
-    for(int i=0;i<6;++i){
-        if(snapshotType!=ValueType::Mixed&&snapshotType!=types[i])continue;
-        usize c=candidate_count_for(base,size,b.candidateBytes,sizes[i]);
-        b.candidateCounts[i]=c;b.activeCounts[i]=c;b.maskModes[i]=c?SNAP_MASK_ALL:SNAP_MASK_NONE;
-        usize max=(usize)-1;if(c>max-g_snapshotCandidates)g_snapshotCandidates=max;else g_snapshotCandidates+=c;if(c>max-g_snapshotTypeCounts[i])g_snapshotTypeCounts[i]=max;else g_snapshotTypeCounts[i]+=c;
-    }
-    return true;
-}
-static bool snapshot_mask_test(const SnapshotBlock_& b,int ti,usize index){
-    if(ti<0||ti>=6||index>=b.candidateCounts[ti])return false;
-    if(b.maskModes[ti]==SNAP_MASK_ALL)return true;
-    if(b.maskModes[ti]!=SNAP_MASK_EXPLICIT||!b.masks[ti])return false;
-    return (b.masks[ti][index>>3]&(u8)(1u<<(index&7)))!=0;
-}
-static void snapshot_mask_set(u8* mask,usize index){if(mask)mask[index>>3]|=(u8)(1u<<(index&7));}
-static usize snapshot_mask_bytes(usize count){return (count+7)/8;}
 static void refresh_snapshot_type_counts(){memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));g_snapshotCandidates=0;usize max=(usize)-1;for(usize bi=0;bi<g_snapshotCount;++bi){for(int ti=0;ti<6;++ti){usize c=g_snapshotBlocks[bi].activeCounts[ti];if(c>max-g_snapshotTypeCounts[ti])g_snapshotTypeCounts[ti]=max;else g_snapshotTypeCounts[ti]+=c;if(c>max-g_snapshotCandidates)g_snapshotCandidates=max;else g_snapshotCandidates+=c;}}}
 static void refresh_result_type_counts(){memzero(g_resultTypeCounts,sizeof(g_resultTypeCounts));for(usize i=0;i<g_resultCount;++i){int ti=value_type_index((ValueType)g_results[i].type);if(ti>=0)++g_resultTypeCounts[ti];}}
-static bool disable_mixed_type(ValueType t){if(g_type!=ValueType::Mixed)return false;int ti=value_type_index(t);if(ti<0)return false;bool changed=false;if(g_snapshotActive){for(usize bi=0;bi<g_snapshotCount;++bi){SnapshotBlock_& b=g_snapshotBlocks[bi];if(!b.activeCounts[ti])continue;if(b.masks[ti]){HeapFree(g_heap,0,b.masks[ti]);b.masks[ti]=nullptr;}b.activeCounts[ti]=0;b.maskModes[ti]=SNAP_MASK_NONE;changed=true;}if(changed)refresh_snapshot_type_counts();return changed;}usize out=0;for(usize i=0;i<g_resultCount;++i){if((ValueType)g_results[i].type==t){changed=true;continue;}if(out!=i)g_results[out]=g_results[i];++out;}g_resultCount=out;if(changed){refresh_result_type_counts();g_rankingDirty=true;}return changed;}
+static bool ui_sync_scan_from_engine(const CwGuiScanSummary& summary);
+static bool disable_mixed_type(ValueType t){if(g_type!=ValueType::Mixed)return false;int ti=value_type_index(t);if(ti<0)return false;if(cw_gui_engine_connected()){CwGuiScanSummary summary{};char engineError[256]{};if(!cw_gui_engine_scan_disable_type((u8)t,&summary,engineError,sizeof(engineError)))return false;return ui_sync_scan_from_engine(summary);}bool changed=false;if(g_snapshotActive){for(usize bi=0;bi<g_snapshotCount;++bi){SnapshotBlock_& b=g_snapshotBlocks[bi];if(!b.activeCounts[ti])continue;if(b.masks[ti]){HeapFree(g_heap,0,b.masks[ti]);b.masks[ti]=nullptr;}b.activeCounts[ti]=0;b.maskModes[ti]=SNAP_MASK_NONE;changed=true;}if(changed)refresh_snapshot_type_counts();return changed;}usize out=0;for(usize i=0;i<g_resultCount;++i){if((ValueType)g_results[i].type==t){changed=true;continue;}if(out!=i)g_results[out]=g_results[i];++out;}g_resultCount=out;if(changed){refresh_result_type_counts();g_rankingDirty=true;}return changed;}
 
 static void guided_reset(){g_guidedCount=0;memzero(g_guidedSteps,sizeof(g_guidedSteps));}
 static usize guided_current_count(){return g_snapshotActive?g_snapshotCandidates:g_resultCount;}
@@ -542,16 +431,12 @@ static u16 result_goal_value_rank(const Result& r){double v=0.0;bool integral=fa
 static u16 result_isolation_rank(usize idx){if(idx>=g_resultCount)return 0;const Result& r=g_results[idx];uptr nearest=(uptr)-1;for(usize d=1;d<=8;++d){if(idx>=d){const Result& o=g_results[idx-d];if(o.type==r.type){uptr dist=o.address>r.address?o.address-r.address:r.address-o.address;if(dist&&dist<nearest)nearest=dist;}}if(idx+d<g_resultCount){const Result& o=g_results[idx+d];if(o.type==r.type){uptr dist=o.address>r.address?o.address-r.address:r.address-o.address;if(dist&&dist<nearest)nearest=dist;}}}if(nearest==(uptr)-1)return 8;uptr width=(uptr)type_size((ValueType)r.type);if(nearest>=width*256)return 12;if(nearest>=width*64)return 9;if(nearest>=width*16)return 6;if(nearest>=width*4)return 3;return 0;}
 static bool rank_nearest_anchor(uptr address,uptr& distance,int& watchSlot,uptr* anchorAddress=nullptr){distance=(uptr)-1;watchSlot=-1;if(!g_rankAnchorCount)return false;usize lo=0,hi=g_rankAnchorCount;while(lo<hi){usize mid=lo+(hi-lo)/2;if(g_rankAnchors[mid].address<address)lo=mid+1;else hi=mid;}auto consider=[&](usize i){if(i>=g_rankAnchorCount)return;uptr a=g_rankAnchors[i].address;uptr d=a>address?a-address:address-a;if(d<distance||(d==distance&&g_rankAnchors[i].watchSlot<watchSlot)){distance=d;watchSlot=g_rankAnchors[i].watchSlot;if(anchorAddress)*anchorAddress=a;}};consider(lo);if(lo)consider(lo-1);return watchSlot>=0;}
 static u16 result_watch_proximity_rank(uptr address,uptr regionBegin,uptr regionEnd,bool regionValid){uptr distance=0,anchor=0;int slot=-1;if(!rank_nearest_anchor(address,distance,slot,&anchor)||distance==0)return 0;u16 score=0;if(distance<=0x1000u)score=28;else if(distance<=0x10000u)score=22;else if(distance<=0x100000u)score=14;else if(distance<=0x1000000u)score=6;else return 0;if(regionValid&&anchor>=regionBegin&&anchor<regionEnd)score=(u16)(score+10);return score;}
-static u16 result_rank_score(usize idx,MEMORY_BASIC_INFORMATION_& cached,uptr& begin,uptr& end,bool& valid){if(idx>=g_resultCount)return 0;uptr a=g_results[idx].address;if(!valid||a<begin||a>=end){MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx((HANDLE)g_process,(LPCVOID)a,&mbi,sizeof(mbi));if(q&&mbi.RegionSize){memcopy(&cached,&mbi,sizeof(mbi));begin=(uptr)mbi.BaseAddress;end=begin+(uptr)mbi.RegionSize;if(end<=begin)end=(uptr)-1;valid=a>=begin&&a<end;}else valid=false;}u16 score=(u16)(result_type_rank((ValueType)g_results[idx].type)+result_value_rank(g_results[idx])+result_goal_type_rank((ValueType)g_results[idx].type)+result_goal_value_rank(g_results[idx])+result_isolation_rank(idx)+result_watch_proximity_rank(a,begin,end,valid));if(valid){if(cached.Type==MEM_PRIVATE)score+=50;if(writable(cached.Protect))score+=30;if(!executable(cached.Protect))score+=10;}return score;}
+static u16 result_rank_score(usize idx,MEMORY_BASIC_INFORMATION_& cached,uptr& begin,uptr& end,bool& valid){(void)cached;begin=0;end=0;valid=false;if(idx>=g_resultCount)return 0;uptr a=g_results[idx].address;return (u16)(result_type_rank((ValueType)g_results[idx].type)+result_value_rank(g_results[idx])+result_goal_type_rank((ValueType)g_results[idx].type)+result_goal_value_rank(g_results[idx])+result_isolation_rank(idx)+result_watch_proximity_rank(a,0,0,false));}
 static bool rank_entry_better(u16 scoreA,usize idxA,u16 scoreB,usize idxB){if(scoreA!=scoreB)return scoreA>scoreB;if(g_results[idxA].address!=g_results[idxB].address)return g_results[idxA].address<g_results[idxB].address;if(g_results[idxA].type!=g_results[idxB].type)return g_results[idxA].type<g_results[idxB].type;return idxA<idxB;}
 static void rebuild_result_ranking(){g_rankedCount=0;g_rankingDirty=false;if(!g_rankingEnabled||g_snapshotActive||!g_process||!g_resultCount)return;usize histogram[256]{};MEMORY_BASIC_INFORMATION_ cache{};uptr begin=0,end=0;bool valid=false;for(usize i=0;i<g_resultCount;++i){u16 s=result_rank_score(i,cache,begin,end,valid);if(s>255)s=255;++histogram[s];}usize need=g_resultCount<MAX_UI_RANKED_RESULTS?g_resultCount:MAX_UI_RANKED_RESULTS;usize cumulative=0;int cutoff=0;for(int s=255;s>=0;--s){if(cumulative+histogram[s]>=need){cutoff=s;break;}cumulative+=histogram[s];}memzero(&cache,sizeof(cache));begin=end=0;valid=false;for(usize i=0;i<g_resultCount&&g_rankedCount<need;++i){u16 s=result_rank_score(i,cache,begin,end,valid);if((int)s<=cutoff)continue;g_rankedIndices[g_rankedCount]=i;g_rankedScores[g_rankedCount]=s;++g_rankedCount;}memzero(&cache,sizeof(cache));begin=end=0;valid=false;for(usize i=0;i<g_resultCount&&g_rankedCount<need;++i){u16 s=result_rank_score(i,cache,begin,end,valid);if((int)s!=cutoff)continue;g_rankedIndices[g_rankedCount]=i;g_rankedScores[g_rankedCount]=s;++g_rankedCount;}for(usize i=1;i<g_rankedCount;++i){usize idx=g_rankedIndices[i];u16 score=g_rankedScores[i];usize j=i;while(j>0&&rank_entry_better(score,idx,g_rankedScores[j-1],g_rankedIndices[j-1])){g_rankedIndices[j]=g_rankedIndices[j-1];g_rankedScores[j]=g_rankedScores[j-1];--j;}g_rankedIndices[j]=idx;g_rankedScores[j]=score;}}
 
 static void print_last_error(const char* prefix){ char b[256];usize n=0;append_str(b,sizeof(b),n,prefix);append_str(b,sizeof(b),n," (Win32 error ");append_u64_dec(b,sizeof(b),n,(u64)GetLastError());append_str(b,sizeof(b),n,")\r\n");flush_buf(b,n); }
 
-static void cmd_processes(){ HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0); if(snap==(HANDLE)(uptr)-1){print_last_error("CreateToolhelp32Snapshot failed");return;} PROCESSENTRY32A_ e{};e.dwSize=(DWORD)sizeof(e); if(!Process32First(snap,&e)){print_last_error("Process32First failed");CloseHandle(snap);return;} println("PID       PROCESS"); do{char b[512];usize n=0;append_u64_dec(b,sizeof(b),n,e.th32ProcessID);while(n<10)append_char(b,sizeof(b),n,' ');append_str(b,sizeof(b),n,e.szExeFile);append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);}while(Process32Next(snap,&e));CloseHandle(snap); }
-
-
-static bool parse_index(const char* s,usize& idx);
 static void clear_pointer_index(){ g_pointerCount=0; g_pointerIndexTruncated=false; }
 static void clear_pointer_chains(){ g_pointerChainCount=0; g_pointerChainsTruncated=false; g_chainPointerSize=0; }
 static bool reserve_pointer_index(usize need){ if(need<=g_pointerCap)return true;usize nc=g_pointerCap?g_pointerCap:65536;while(nc<need){usize next=nc*2;if(next<nc){nc=need;break;}nc=next;if(nc>MAX_POINTER_ENTRIES){nc=MAX_POINTER_ENTRIES;break;}}if(nc<need)return false;SIZE_T bytes=nc*(SIZE_T)sizeof(PointerEntry);void* q=g_pointerIndex?HeapReAlloc(g_heap,0,g_pointerIndex,bytes):HeapAlloc(g_heap,0,bytes);if(!q)return false;g_pointerIndex=(PointerEntry*)q;g_pointerCap=nc;return true;}
@@ -572,677 +457,20 @@ static int module_for_address(uptr address){
     return -1;
 }
 static int module_by_name(const char* name){for(usize i=0;i<g_moduleCount;++i)if(strieq(g_modules[i].name,name))return (int)i;return -1;}
-static bool refresh_modules(){g_moduleCount=0;if(!g_process)return false;HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE|TH32CS_SNAPMODULE32,g_pid);if(snap==(HANDLE)(uptr)-1){print_last_error("Module snapshot failed");return false;}MODULEENTRY32W_ e{};e.dwSize=(DWORD)sizeof(e);if(!Module32FirstW(snap,&e)){print_last_error("Module32FirstW failed");CloseHandle(snap);return false;}do{if(g_moduleCount>=MAX_MODULES)break;ModuleInfo_& m=g_modules[g_moduleCount++];m.base=(uptr)e.modBaseAddr;m.size=(u64)e.modBaseSize;narrow_wide(m.name,sizeof(m.name),e.szModule);}while(Module32NextW(snap,&e));CloseHandle(snap);return g_moduleCount>0;}
-static void cmd_modules(){if(!g_process){println("Attach to a process first.");return;}if(!refresh_modules())return;println("BASE                SIZE        MODULE");for(usize i=0;i<g_moduleCount;++i){char b[420];usize n=0;append_hex(b,sizeof(b),n,g_modules[i].base);while(n<20)append_char(b,sizeof(b),n,' ');append_hex(b,sizeof(b),n,g_modules[i].size,8);while(n<32)append_char(b,sizeof(b),n,' ');append_str(b,sizeof(b),n,g_modules[i].name);append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);}char b[128];usize n=0;append_str(b,sizeof(b),n,"Total modules: ");append_u64_dec(b,sizeof(b),n,g_moduleCount);append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);}
-static bool parse_target_address(const char* s,uptr& address){if(!s)return false;if(*s=='#'){usize idx=0;if(!parse_index(s,idx))return false;address=g_results[idx].address;return true;}u64 v=0;if(!parse_u64(s,v))return false;address=(uptr)v;return true;}
-static bool reserve_pointer_ranges(usize need){
-    if(need<=g_pointerRangeCap)return true;
-    usize nc=g_pointerRangeCap?g_pointerRangeCap:4096;
-    while(nc<need){usize next=nc*2;if(next<nc){nc=need;break;}nc=next;if(nc>MAX_POINTER_RANGES){nc=MAX_POINTER_RANGES;break;}}
-    if(nc<need)return false;
-    SIZE_T bytes=nc*(SIZE_T)sizeof(PointerRange_);
-    void* q=g_pointerRanges?HeapReAlloc(g_heap,0,g_pointerRanges,bytes):HeapAlloc(g_heap,0,bytes);
-    if(!q)return false;g_pointerRanges=(PointerRange_*)q;g_pointerRangeCap=nc;return true;
-}
-static bool collect_pointer_target_ranges(){
-    g_pointerRangeCount=0;SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);uptr cur=(uptr)si.lpMinimumApplicationAddress,max=(uptr)si.lpMaximumApplicationAddress;
-    while(cur<max){MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx((HANDLE)g_process,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;uptr base=(uptr)mbi.BaseAddress,end=base+(uptr)mbi.RegionSize;if(end<=cur)break;
-        if(mbi.State==MEM_COMMIT&&readable(mbi.Protect)){if(!reserve_pointer_ranges(g_pointerRangeCount+1))return false;g_pointerRanges[g_pointerRangeCount++]={base,end};}
-        cur=end;
-    }
-    return g_pointerRangeCount>0;
-}
-static bool pointer_value_targets_readable(uptr value){
-    usize lo=0,hi=g_pointerRangeCount;while(lo<hi){usize mid=lo+(hi-lo)/2;PointerRange_ r=g_pointerRanges[mid];if(value<r.begin)hi=mid;else if(value>=r.end)lo=mid+1;else return true;}return false;
-}
-static usize pointer_near_target_count(uptr target,uptr maxOffset,uptr maxNegative){
-    uptr low=target>=maxOffset?target-maxOffset:0;uptr high=(~(uptr)0-target<maxNegative)?~(uptr)0:target+maxNegative;usize b=lower_pointer_value(low),e=upper_pointer_value(high);return e>=b?e-b:0;
-}
-
-static bool build_pointer_index(){
-    if(!g_process){println("Attach to a process first.");return false;}
-    clear_pointer_index();
-    if(!collect_pointer_target_ranges()){println("Could not build readable target-region map for pointer scan.");return false;}
-    SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);
-    uptr min=(uptr)si.lpMinimumApplicationAddress,max=(uptr)si.lpMaximumApplicationAddress;
-    usize alignment=g_pointerAlignment?g_pointerAlignment:(usize)g_pointerSize;
-    if(!(alignment==1||alignment==2||alignment==4||alignment==8)){println("Invalid pointer alignment setting.");return false;}
-    u8* buf=(u8*)HeapAlloc(g_heap,0,SCAN_CHUNK+8);if(!buf){println("Out of memory.");return false;}
-    uptr cur=min;usize regions=0;
-    while(cur<max&&!g_pointerIndexTruncated&&!g_pointerCancelRequested){
-        MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx((HANDLE)g_process,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;
-        uptr base=(uptr)mbi.BaseAddress,end=base+(uptr)mbi.RegionSize;if(end<=cur)break;
-        bool allowed=mbi.State==MEM_COMMIT&&readable(mbi.Protect);
-        if(allowed&&g_pointerWritableOnly&&!writable(mbi.Protect))allowed=false;
-        if(allowed&&g_pointerPrivateOnly&&mbi.Type!=MEM_PRIVATE)allowed=false;
-        if(allowed){
-            ++regions;
-            for(uptr p=base;p<end&&!g_pointerIndexTruncated&&!g_pointerCancelRequested;){
-                usize primary=(usize)((end-p)>SCAN_CHUNK?SCAN_CHUNK:(end-p));
-                usize extra=(p+primary<end)?(usize)(g_pointerSize-1):0;
-                usize toRead=primary+extra;if(p+toRead>end)toRead=(usize)(end-p);
-                SIZE_T got=0;ReadProcessMemory((HANDLE)g_process,(LPCVOID)p,buf,toRead,&got);
-                if(got>=g_pointerSize){
-                    usize startOff=0;usize rem=(usize)(p%alignment);if(rem)startOff=alignment-rem;
-                    for(usize off=startOff;off<primary&&off+g_pointerSize<=(usize)got&&!g_pointerCancelRequested;off+=alignment){
-                        uptr value=0;
-                        if(g_pointerSize==4){u32 v=0;memcopy(&v,buf+off,4);value=(uptr)v;}
-                        else{u64 v=0;memcopy(&v,buf+off,8);value=(uptr)v;}
-                        if(value>=min&&value<max&&pointer_value_targets_readable(value)){if(!add_pointer_entry(value,p+off))break;}
-                    }
-                }
-                p+=primary;
-            }
-        }
-        cur=end;
-    }
-    HeapFree(g_heap,0,buf);if(g_pointerCancelRequested){clear_pointer_index();return false;}sort_pointer_index();
-    char b[360];usize n=0;append_str(b,sizeof(b),n,"Pointer index: ");append_u64_dec(b,sizeof(b),n,g_pointerCount);
-    append_str(b,sizeof(b),n," entries across ");append_u64_dec(b,sizeof(b),n,regions);append_str(b,sizeof(b),n," region(s), alignment ");
-    if(g_pointerAlignment==0)append_str(b,sizeof(b),n,"natural");else append_u64_dec(b,sizeof(b),n,alignment);
-    if(g_pointerWritableOnly)append_str(b,sizeof(b),n," | writable-only");if(g_pointerPrivateOnly)append_str(b,sizeof(b),n," | private-only");
-    if(g_pointerIndexTruncated)append_str(b,sizeof(b),n," [TRUNCATED]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);
-    return g_pointerCount>0;
-}
-static bool path_has(const uptr* path,u8 count,uptr value){for(u8 i=0;i<count;++i)if(path[i]==value)return true;return false;}
-static bool add_signed_offset(uptr base,i64 offset,uptr& out){
-    if(offset>=0){uptr mag=(uptr)offset;if(~(uptr)0-base<mag)return false;out=base+mag;return true;}
-    u64 mag=(u64)(-(offset+1))+1ULL;if(base<(uptr)mag)return false;out=base-(uptr)mag;return true;
-}
-static bool add_pointer_chain(int moduleIndex,uptr slot,uptr rootOffset,const i64* rev,u8 revCount,i64 currentOffset,usize maxChains){
-    if(g_pointerChainCount>=maxChains||g_pointerChainCount>=MAX_POINTER_CHAINS){g_pointerChainsTruncated=true;return false;}
-    if(!reserve_pointer_chains(g_pointerChainCount+1)){g_pointerChainsTruncated=true;return false;}
-    PointerChain_& c=g_pointerChains[g_pointerChainCount++];memzero(&c,sizeof(c));strcopy(c.module,sizeof(c.module),g_modules[moduleIndex].name);c.rootOffset=rootOffset;c.depth=(u8)(revCount+1);c.offsets[0]=currentOffset;for(u8 i=0;i<revCount;++i)c.offsets[i+1]=rev[revCount-1-i];(void)slot;return true;
-}
-static void pointer_dfs(uptr current,u8 maxDepth,uptr maxOffset,uptr maxNegativeOffset,usize maxChains,i64* rev,u8 revCount,uptr* path,u8 pathCount){
-    if(g_pointerCancelRequested||g_pointerSearchBudgetHit||revCount>=maxDepth||g_pointerChainCount>=maxChains)return;
-    uptr low=current>=maxOffset?current-maxOffset:0;
-    uptr high=(~(uptr)0-current<maxNegativeOffset)?~(uptr)0:current+maxNegativeOffset;
-    usize begin=lower_pointer_value(low),end=upper_pointer_value(high);
-    if(begin>=end)return;
-
-    // Visit candidates from the smallest absolute offset outward. Real object
-    // layouts overwhelmingly use small field offsets; this reaches useful
-    // chains earlier and avoids spending the whole budget on distant values.
-    usize right=lower_pointer_value(current);
-    if(right<begin)right=begin;if(right>end)right=end;
-    usize left=right;
-    usize candidates=0;
-    while((left>begin||right<end)&&!g_pointerCancelRequested&&!g_pointerSearchBudgetHit){
-        if(++candidates>g_pointerBranchCap){g_pointerChainsTruncated=true;break;}
-        if(++g_pointerSearchSteps>g_pointerSearchBudget){g_pointerSearchBudgetHit=1;g_pointerChainsTruncated=true;break;}
-
-        bool takeLeft=false;
-        if(left>begin&&right<end){
-            uptr lv=g_pointerIndex[left-1].value,rv=g_pointerIndex[right].value;
-            uptr ld=current>=lv?current-lv:lv-current;
-            uptr rd=current>=rv?current-rv:rv-current;
-            takeLeft=ld<=rd;
-        }else takeLeft=left>begin;
-        usize i=takeLeft?--left:right++;
-        const PointerEntry& e=g_pointerIndex[i];i64 offset=0;
-        if(e.value<=current){uptr diff=current-e.value;if(diff>maxOffset||diff>0x7FFFFFFFFFFFFFFFULL)continue;offset=(i64)diff;}
-        else{uptr diff=e.value-current;if(diff>maxNegativeOffset||diff>0x7FFFFFFFFFFFFFFFULL)continue;offset=-(i64)diff;}
-        uptr slot=e.address;if(path_has(path,pathCount,slot))continue;int mi=module_for_address(slot);
-        if(mi>=0){if(!add_pointer_chain(mi,slot,slot-g_modules[mi].base,rev,revCount,offset,maxChains))return;continue;}
-        if(revCount+1<maxDepth){rev[revCount]=offset;path[pathCount]=slot;pointer_dfs(slot,maxDepth,maxOffset,maxNegativeOffset,maxChains,rev,(u8)(revCount+1),path,(u8)(pathCount+1));if(g_pointerChainCount>=maxChains||g_pointerSearchBudgetHit)return;}
-    }
-}
-static u64 abs_i64_u64(i64 v){return v<0?(u64)(-(v+1))+1ULL:(u64)v;}
-static bool layer_less(const PointerLayerNode_& a,const PointerLayerNode_& b){return a.address<b.address||(a.address==b.address&&a.score<b.score);}
-static void layer_swap(PointerLayerNode_& a,PointerLayerNode_& b){PointerLayerNode_ t=a;a=b;b=t;}
-static void layer_sift(PointerLayerNode_* a,usize start,usize count){usize root=start;for(;;){usize child=root*2+1;if(child>=count)return;usize best=root;if(layer_less(a[best],a[child]))best=child;if(child+1<count&&layer_less(a[best],a[child+1]))best=child+1;if(best==root)return;layer_swap(a[root],a[best]);root=best;}}
-static void layer_sort(PointerLayerNode_* a,usize count){if(count<2)return;for(usize i=count/2;i>0;--i)layer_sift(a,i-1,count);for(usize end=count;end>1;--end){layer_swap(a[0],a[end-1]);usize root=0,n=end-1;for(;;){usize child=root*2+1;if(child>=n)break;usize best=root;if(layer_less(a[best],a[child]))best=child;if(child+1<n&&layer_less(a[best],a[child+1]))best=child+1;if(best==root)break;layer_swap(a[root],a[best]);root=best;}}}
-static usize layer_lower(PointerLayerNode_* a,usize count,uptr address){usize lo=0,hi=count;while(lo<hi){usize mid=lo+(hi-lo)/2;if(a[mid].address<address)lo=mid+1;else hi=mid;}return lo;}
-static usize layer_upper(PointerLayerNode_* a,usize count,uptr address){usize lo=0,hi=count;while(lo<hi){usize mid=lo+(hi-lo)/2;if(a[mid].address<=address)lo=mid+1;else hi=mid;}return lo;}
-static usize layer_dedup(PointerLayerNode_* a,usize count){if(!count)return 0;layer_sort(a,count);usize out=0;for(usize i=0;i<count;++i){if(out&&a[i].address==a[out-1].address)continue;if(out!=i)a[out]=a[i];++out;}return out;}
-static bool range_overlaps_any_module(uptr begin,uptr end){for(usize i=0;i<g_moduleCount;++i){uptr mb=g_modules[i].base;uptr me=mb+(uptr)g_modules[i].size;if(me<mb)me=~(uptr)0;if(begin<me&&end>mb)return true;}return false;}
-static bool layer_pick_target(PointerLayerNode_* nodes,usize count,uptr value,uptr maxOffset,uptr maxNegative,usize& idx,i64& offset){
-    if(!count)return false;uptr low=value>=maxNegative?value-maxNegative:0;uptr high=(~(uptr)0-value<maxOffset)?~(uptr)0:value+maxOffset;usize b=layer_lower(nodes,count,low),e=layer_upper(nodes,count,high);if(b>=e)return false;
-    usize r=layer_lower(nodes,count,value);if(r<b)r=b;if(r>e)r=e;bool have=false;usize best=0;u64 bestDist=~0ULL;
-    if(r<e){u64 d=nodes[r].address>=value?(u64)(nodes[r].address-value):(u64)(value-nodes[r].address);best=r;bestDist=d;have=true;}
-    if(r>b){usize l=r-1;u64 d=nodes[l].address>=value?(u64)(nodes[l].address-value):(u64)(value-nodes[l].address);if(!have||d<=bestDist){best=l;bestDist=d;have=true;}}
-    if(!have)return false;uptr target=nodes[best].address;if(target>=value){uptr d=target-value;if(d>maxOffset||d>0x7FFFFFFFFFFFFFFFULL)return false;offset=(i64)d;}else{uptr d=value-target;if(d>maxNegative||d>0x7FFFFFFFFFFFFFFFULL)return false;offset=-(i64)d;}idx=best;return true;
-}
-static bool add_layer_chain(int moduleIndex,uptr slot,i64 firstOffset,const PointerLayerNode_& tail,usize maxChains){
-    if(g_pointerChainCount>=maxChains||g_pointerChainCount>=MAX_POINTER_CHAINS){g_pointerChainsTruncated=true;return false;}if(tail.depth+1>MAX_POINTER_DEPTH)return true;if(!reserve_pointer_chains(g_pointerChainCount+1)){g_pointerChainsTruncated=true;return false;}
-    PointerChain_& c=g_pointerChains[g_pointerChainCount++];memzero(&c,sizeof(c));strcopy(c.module,sizeof(c.module),g_modules[moduleIndex].name);c.rootOffset=slot-g_modules[moduleIndex].base;c.depth=(u8)(tail.depth+1);c.offsets[0]=firstOffset;for(u8 i=0;i<tail.depth;++i)c.offsets[i+1]=tail.offsets[i];return true;
-}
-static bool pointer_layered_search_once(uptr target,u8 maxDepth,uptr maxOffset,uptr maxNegative,usize maxChains,usize alignment,usize parentCap){
-    if(!g_process||!maxDepth)return false;if(!collect_pointer_target_ranges())return false;if(!(alignment==1||alignment==2||alignment==4||alignment==8))alignment=(usize)g_pointerSize;
-    SIZE_T nodeBytes=(SIZE_T)MAX_POINTER_LAYER_NODES*sizeof(PointerLayerNode_);PointerLayerNode_* current=(PointerLayerNode_*)HeapAlloc(g_heap,0,nodeBytes);PointerLayerNode_* next=(PointerLayerNode_*)HeapAlloc(g_heap,0,nodeBytes);u8* buf=(u8*)HeapAlloc(g_heap,0,SCAN_CHUNK+8);if(!current||!next||!buf){if(current)HeapFree(g_heap,0,current);if(next)HeapFree(g_heap,0,next);if(buf)HeapFree(g_heap,0,buf);return false;}
-    memzero(&current[0],sizeof(PointerLayerNode_));current[0].address=target;current[0].depth=0;usize currentCount=1;bool ok=true;g_pointerLayerTruncated=0;g_pointerLayerSlots=0;g_pointerLayerMatches=0;g_pointerLayerFrontier=1;g_pointerLayerDepth=0;g_pointerLayerMaxDepth=maxDepth;
-    SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);uptr min=(uptr)si.lpMinimumApplicationAddress,max=(uptr)si.lpMaximumApplicationAddress;
-    for(u8 level=0;level<maxDepth&&!g_pointerCancelRequested&&g_pointerChainCount<maxChains;++level){
-        currentCount=layer_dedup(current,currentCount);for(usize i=0;i<currentCount;++i)current[i].parentsSeen=0;g_pointerLayerDepth=(u64)(level+1);g_pointerLayerFrontier=currentCount;usize nextCount=0;uptr cur=min;
-        while(cur<max&&!g_pointerCancelRequested){MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx((HANDLE)g_process,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;uptr base=(uptr)mbi.BaseAddress,end=base+(uptr)mbi.RegionSize;if(end<=cur)break;bool allowed=mbi.State==MEM_COMMIT&&readable(mbi.Protect);if(allowed&&!writable(mbi.Protect)&&!range_overlaps_any_module(base,end))allowed=false;
-            if(allowed){for(uptr p=base;p<end&&!g_pointerCancelRequested;){usize primary=(usize)((end-p)>SCAN_CHUNK?SCAN_CHUNK:(end-p));usize extra=(p+primary<end)?(usize)(g_pointerSize-1):0;usize toRead=primary+extra;if(p+toRead>end)toRead=(usize)(end-p);SIZE_T got=0;ReadProcessMemory((HANDLE)g_process,(LPCVOID)p,buf,toRead,&got);if(got>=g_pointerSize){usize startOff=0;usize rem=(usize)(p%alignment);if(rem)startOff=alignment-rem;for(usize off=startOff;off<primary&&off+g_pointerSize<=(usize)got&&!g_pointerCancelRequested;off+=alignment){uptr value=0;if(g_pointerSize==4){u32 v=0;memcopy(&v,buf+off,4);value=(uptr)v;}else{u64 v=0;memcopy(&v,buf+off,8);value=(uptr)v;}++g_pointerLayerSlots;usize ti=0;i64 delta=0;if(!layer_pick_target(current,currentCount,value,maxOffset,maxNegative,ti,delta))continue;PointerLayerNode_& tail=current[ti];if(tail.parentsSeen>=parentCap)continue;++tail.parentsSeen;++g_pointerLayerMatches;uptr slot=p+off;int mi=module_for_address(slot);if(mi>=0){if(!add_layer_chain(mi,slot,delta,tail,maxChains)){ok=false;break;}continue;}if(level+1>=maxDepth)continue;if(nextCount>=MAX_POINTER_LAYER_NODES){g_pointerLayerTruncated=1;continue;}PointerLayerNode_& nn=next[nextCount++];memzero(&nn,sizeof(nn));nn.address=slot;nn.depth=(u8)(tail.depth+1);nn.offsets[0]=delta;for(u8 j=0;j<tail.depth;++j)nn.offsets[j+1]=tail.offsets[j];nn.score=tail.score+abs_i64_u64(delta);}}
-                    p+=primary;if(g_pointerChainCount>=maxChains)break;}}
-            cur=end;if(g_pointerChainCount>=maxChains)break;}
-        if(!ok||g_pointerCancelRequested||g_pointerChainCount)break;if(!nextCount)break;nextCount=layer_dedup(next,nextCount);PointerLayerNode_* tmp=current;current=next;next=tmp;currentCount=nextCount;
-    }
-    HeapFree(g_heap,0,buf);HeapFree(g_heap,0,current);HeapFree(g_heap,0,next);return ok&&!g_pointerCancelRequested;
-}
-static bool pointer_layered_search(uptr target,u8 maxDepth,uptr maxOffset,uptr maxNegative,usize maxChains,usize alignment,usize parentCap){
-    g_pointerChainCount=0;g_pointerChainsTruncated=false;g_pointerLayerMatches=0;return pointer_layered_search_once(target,maxDepth,maxOffset,maxNegative,maxChains,alignment,parentCap);
-}
-
-static void append_signed_hex_offset(char* b,usize cap,usize& n,i64 offset){
-    if(offset<0){append_str(b,cap,n," -> -");u64 mag=(u64)(-(offset+1))+1ULL;append_hex(b,cap,n,(uptr)mag);}else{append_str(b,cap,n," -> +");append_hex(b,cap,n,(uptr)offset);}
-}
-static void print_pointer_chain(usize i){
-    if(i>=g_pointerChainCount)return;PointerChain_& c=g_pointerChains[i];char b[768];usize n=0;append_str(b,sizeof(b),n,"P#");append_u64_dec(b,sizeof(b),n,i);append_str(b,sizeof(b),n,"  ");append_str(b,sizeof(b),n,c.module);append_str(b,sizeof(b),n,"+");append_hex(b,sizeof(b),n,c.rootOffset);for(u8 j=0;j<c.depth;++j)append_signed_hex_offset(b,sizeof(b),n,c.offsets[j]);append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);
-}
-static bool read_target_pointer(uptr address,uptr& value){SIZE_T got=0;if(g_pointerSize==4){u32 v=0;if(!ReadProcessMemory((HANDLE)g_process,(LPCVOID)address,&v,4,&got)||got!=4)return false;value=(uptr)v;return true;}u64 v=0;if(!ReadProcessMemory((HANDLE)g_process,(LPCVOID)address,&v,8,&got)||got!=8)return false;value=(uptr)v;return true;}
-static bool resolve_pointer_chain(const PointerChain_& c,uptr& resolved){
-    int mi=module_by_name(c.module);if(mi<0)return false;uptr addr=g_modules[mi].base+c.rootOffset;
-    for(u8 i=0;i<c.depth;++i){uptr pv=0;if(!read_target_pointer(addr,pv))return false;if(!add_signed_offset(pv,c.offsets[i],addr))return false;}
-    resolved=addr;return true;
-}
-static bool parse_onoff(const char* s,bool& value){if(!s)return false;if(strieq(s,"on")||streq(s,"1")||strieq(s,"true")||strieq(s,"yes")){value=true;return true;}if(strieq(s,"off")||streq(s,"0")||strieq(s,"false")||strieq(s,"no")){value=false;return true;}return false;}
-static void print_pointer_settings(){
-    char b[520];usize n=0;append_str(b,sizeof(b),n,"Pointer settings: alignment=");
-    if(g_pointerAlignment==0)append_str(b,sizeof(b),n,"natural");else if(g_pointerAlignment==1)append_str(b,sizeof(b),n,"byte");else append_u64_dec(b,sizeof(b),n,g_pointerAlignment);
-    append_str(b,sizeof(b),n," | writable=");append_str(b,sizeof(b),n,g_pointerWritableOnly?"on":"off");
-    append_str(b,sizeof(b),n," | private=");append_str(b,sizeof(b),n,g_pointerPrivateOnly?"on":"off");
-    append_str(b,sizeof(b),n," | branch=");append_u64_dec(b,sizeof(b),n,g_pointerBranchCap);
-    append_str(b,sizeof(b),n," | root=");append_str(b,sizeof(b),n,g_pointerRootModule[0]?g_pointerRootModule:"any module");append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);
-}
-static void cmd_pointer_settings(const char* key,const char* value){
-    if(!key){print_pointer_settings();return;}if(!value){println("Usage: pointer-settings <alignment|writable|private|branch|root> <value>");return;}
-    if(strieq(key,"alignment")){
-        if(strieq(value,"natural")||strieq(value,"aligned"))g_pointerAlignment=0;
-        else if(strieq(value,"byte")||streq(value,"1")||strieq(value,"unaligned"))g_pointerAlignment=1;
-        else{u64 x=0;if(!parse_u64(value,x)||(x!=2&&x!=4&&x!=8)){println("Alignment must be natural, byte, 2, 4 or 8.");return;}g_pointerAlignment=(usize)x;}
-    }else if(strieq(key,"writable")){bool v=false;if(!parse_onoff(value,v)){println("Writable must be on/off.");return;}g_pointerWritableOnly=v;
-    }else if(strieq(key,"private")){bool v=false;if(!parse_onoff(value,v)){println("Private must be on/off.");return;}g_pointerPrivateOnly=v;
-    }else if(strieq(key,"branch")||strieq(key,"branching")){u64 x=0;if(!parse_u64(value,x)||x<1||x>65536){println("Branch cap must be 1..65536.");return;}g_pointerBranchCap=(usize)x;
-    }else if(strieq(key,"root")){if(strieq(value,"any")||streq(value,"*"))g_pointerRootModule[0]=0;else strcopy(g_pointerRootModule,sizeof(g_pointerRootModule),value);
-    }else{println("Unknown pointer setting.");return;}
-    clear_pointer_index();println("Pointer settings updated. Existing chains were kept.");print_pointer_settings();
-}
-
-static void cmd_pointer_scan(const char* targetStr,const char* depthStr,const char* offsetStr,const char* chainsStr,const char* negativeStr){
-    if(!g_process){println("Attach to a process first.");return;}uptr target=0;if(!parse_target_address(targetStr,target)){println("Invalid target. Use #result or address.");return;}
-    u64 depth=3,maxOffset=0x1000,maxNegativeOffset=0,maxChains=MAX_POINTER_CHAINS;
-    if(depthStr&&!parse_u64(depthStr,depth)){println("Invalid depth.");return;}if(offsetStr&&!parse_u64(offsetStr,maxOffset)){println("Invalid max_offset.");return;}if(chainsStr&&!parse_u64(chainsStr,maxChains)){println("Invalid max_chains.");return;}if(negativeStr&&!parse_u64(negativeStr,maxNegativeOffset)){println("Invalid max_negative_offset.");return;}
-    if(depth<1||depth>MAX_POINTER_DEPTH||maxOffset>0x1000000ULL||maxNegativeOffset>0x1000000ULL||maxChains<1||maxChains>MAX_POINTER_CHAINS){println("Limits: depth 1..8, offsets <= 0x1000000, max_chains <= 10000.");return;}
-    if(!refresh_modules())return;BOOL wow=0;if(IsWow64Process((HANDLE)g_process,&wow))g_pointerSize=wow?4:8;clear_pointer_chains();g_chainPointerSize=g_pointerSize;if(!build_pointer_index())return;
-    i64 rev[MAX_POINTER_DEPTH]={};uptr path[MAX_POINTER_DEPTH+1]={};path[0]=target;pointer_dfs(target,(u8)depth,(uptr)maxOffset,(uptr)maxNegativeOffset,(usize)maxChains,rev,0,path,1);
-    char b[320];usize n=0;append_str(b,sizeof(b),n,"Pointer scan found ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n," chain(s), pointer width ");append_u64_dec(b,sizeof(b),n,(u64)g_pointerSize*8);append_str(b,sizeof(b),n,"-bit, max negative offset ");append_hex(b,sizeof(b),n,(uptr)maxNegativeOffset);if(g_pointerChainsTruncated)append_str(b,sizeof(b),n," [TRUNCATED]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);usize preview=g_pointerChainCount<20?g_pointerChainCount:20;for(usize i=0;i<preview;++i)print_pointer_chain(i);
-}
-static void cmd_pointer_results(const char* limitStr){usize limit=50;if(limitStr){u64 x=0;if(!parse_u64(limitStr,x)){println("Invalid limit.");return;}limit=(usize)x;}if(limit>g_pointerChainCount)limit=g_pointerChainCount;for(usize i=0;i<limit;++i)print_pointer_chain(i);char b[128];usize n=0;append_str(b,sizeof(b),n,"Total pointer chains: ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);}
-static void cmd_pointer_resolve(const char* idxStr){if(!g_process){println("Attach to a process first.");return;}if(g_chainPointerSize&&g_chainPointerSize!=g_pointerSize){println("Stored chains use a different pointer width than the attached target.");return;}u64 x=0;if(!parse_u64(idxStr,x)||x>=g_pointerChainCount){println("Invalid pointer chain index.");return;}if(!refresh_modules())return;uptr resolved=0;print_pointer_chain((usize)x);if(resolve_pointer_chain(g_pointerChains[x],resolved)){char b[128];usize n=0;append_str(b,sizeof(b),n,"Resolved address: ");append_hex(b,sizeof(b),n,resolved);append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);}else println("Chain could not be resolved in the current process.");}
-static void cmd_pointer_rescan(const char* targetStr){if(!g_process){println("Attach to a process first.");return;}if(!g_pointerChainCount){println("No stored pointer chains.");return;}if(g_chainPointerSize&&g_chainPointerSize!=g_pointerSize){println("Stored chains use a different pointer width than the attached target.");return;}uptr target=0;if(!parse_target_address(targetStr,target)){println("Invalid target.");return;}if(!refresh_modules())return;usize before=g_pointerChainCount,out=0;for(usize i=0;i<before;++i){uptr resolved=0;if(resolve_pointer_chain(g_pointerChains[i],resolved)&&resolved==target){if(out!=i)g_pointerChains[out]=g_pointerChains[i];++out;}}g_pointerChainCount=out;char b[180];usize n=0;append_str(b,sizeof(b),n,"Pointer rescan: ");append_u64_dec(b,sizeof(b),n,before);append_str(b,sizeof(b),n," -> ");append_u64_dec(b,sizeof(b),n,out);append_str(b,sizeof(b),n," chain(s).\r\n");flush_buf(b,n);}
+static bool refresh_modules(){g_moduleCount=0;if(!g_process||!cw_gui_engine_attached())return false;CwGuiModuleInfo remote[MAX_MODULES]{};u32 count=0;char error[256]{};if(!cw_gui_engine_list_modules(remote,(u32)MAX_MODULES,&count,error,sizeof(error)))return false;for(u32 i=0;i<count&&g_moduleCount<MAX_MODULES;++i){ModuleInfo_& m=g_modules[g_moduleCount++];m.base=(uptr)remote[i].base;m.size=(u64)remote[i].size;strcopy(m.name,sizeof(m.name),remote[i].name);}return g_moduleCount>0;}
 static bool file_write_all(HANDLE h,const void* data,usize size){const u8* p=(const u8*)data;while(size){DWORD chunk=size>0x7FFFFFFFULL?0x7FFFFFFFUL:(DWORD)size;DWORD wrote=0;if(!WriteFile(h,p,chunk,&wrote,nullptr)||wrote==0)return false;p+=wrote;size-=wrote;}return true;}
 static bool file_read_exact(HANDLE h,void* data,usize size){u8* p=(u8*)data;while(size){DWORD chunk=size>0x7FFFFFFFULL?0x7FFFFFFFUL:(DWORD)size;DWORD got=0;if(!ReadFile(h,p,chunk,&got,nullptr)||got==0)return false;p+=got;size-=got;}return true;}
-
-static u32 scan_type_code(ValueType t){switch(t){case ValueType::Byte:return 1;case ValueType::Int16:return 2;case ValueType::Int32:return 3;case ValueType::Int64:return 4;case ValueType::Float:return 5;case ValueType::Double:return 6;default:return 0;}}
-static ValueType scan_type_from_code(u32 c){switch(c){case 1:return ValueType::Byte;case 2:return ValueType::Int16;case 3:return ValueType::Int32;case 4:return ValueType::Int64;case 5:return ValueType::Float;case 6:return ValueType::Double;default:return ValueType::Invalid;}}
-static void cmd_scan_save(const char* path){
-    if(!path||!*path){println("Usage: scan-save <file.cwscan>");return;}
-    if(g_type==ValueType::Invalid){println("No active value scan to save.");return;}
-    if(g_snapshotActive){println("Unknown snapshot/refinement is not persisted. Keep using Next Scan until results are materialized.");return;}
-    HANDLE h=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if((uptr)h==INVALID_HANDLE_BITS){print_last_error("Scan-session open failed");return;}
-    const char magic[8]={'C','W','S','C','A','N','0','1'};u32 ver=1,flags=g_type==ValueType::Mixed?1u:0u;
-    u32 primary=scan_type_code(g_type==ValueType::Mixed?ValueType::Int32:g_type),alignment=g_alignmentByte?1u:0u,writableOnly=0,privateOnly=0;
-    u64 sourcePid=g_pid,minAddress=0,maxAddress=~(u64)0,toleranceBits=0,resultCount=g_resultCount;
-    bool ok=primary!=0&&file_write_all(h,magic,8)&&file_write_all(h,&ver,4)&&file_write_all(h,&flags,4)&&file_write_all(h,&primary,4)&&file_write_all(h,&alignment,4)&&file_write_all(h,&writableOnly,4)&&file_write_all(h,&privateOnly,4)&&file_write_all(h,&sourcePid,8)&&file_write_all(h,&minAddress,8)&&file_write_all(h,&maxAddress,8)&&file_write_all(h,&toleranceBits,8)&&file_write_all(h,&resultCount,8);
-    for(usize i=0;ok&&i<g_resultCount;++i){ValueType t=g_type==ValueType::Mixed?(ValueType)g_results[i].type:g_type;u32 tc=scan_type_code(t),reserved=0;u64 address=g_results[i].address,previous=0;memcopy(&previous,g_results[i].previous,8);if(!tc){ok=false;break;}ok=file_write_all(h,&address,8)&&file_write_all(h,&previous,8)&&file_write_all(h,&tc,4)&&file_write_all(h,&reserved,4);}
-    CloseHandle(h);if(!ok){println("Scan-session save failed while writing file.");return;}
-    char b[320];usize n=0;append_str(b,sizeof(b),n,"Saved ");append_u64_dec(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n," scan result(s) to '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"' with source PID ");append_u64_dec(b,sizeof(b),n,g_pid);append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);
-}
-static void cmd_scan_load(const char* path,bool force){
-    if(!path||!*path){println("Usage: scan-load <file.cwscan> [force]");return;}
-    if(!g_process){println("Attach to the process that owns these addresses before loading the scan session.");return;}
-    HANDLE h=CreateFileA(path,GENERIC_READ,1,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if((uptr)h==INVALID_HANDLE_BITS){print_last_error("Scan-session open failed");return;}
-    char magic[8]={};u32 ver=0,flags=0,primary=0,alignment=0,writableOnly=0,privateOnly=0;u64 sourcePid=0,minAddress=0,maxAddress=0,toleranceBits=0,resultCount=0;
-    bool ok=file_read_exact(h,magic,8)&&file_read_exact(h,&ver,4)&&file_read_exact(h,&flags,4)&&file_read_exact(h,&primary,4)&&file_read_exact(h,&alignment,4)&&file_read_exact(h,&writableOnly,4)&&file_read_exact(h,&privateOnly,4)&&file_read_exact(h,&sourcePid,8)&&file_read_exact(h,&minAddress,8)&&file_read_exact(h,&maxAddress,8)&&file_read_exact(h,&toleranceBits,8)&&file_read_exact(h,&resultCount,8);
-    const char expect[8]={'C','W','S','C','A','N','0','1'};const char legacy[8]={'M','C','E','S','C','A','N','1'};ValueType primaryType=scan_type_from_code(primary);
-    if(!ok||(!memequal(magic,expect,8)&&!memequal(magic,legacy,8))||ver!=1||(flags&~1u)||alignment>1||writableOnly>1||privateOnly>1||primaryType==ValueType::Invalid||resultCount>MAX_RESULTS||minAddress>maxAddress){CloseHandle(h);println("Invalid/unsupported scan-session file.");return;}
-    if(toleranceBits!=0){CloseHandle(h);println("Portable build cannot restore scan sessions with non-zero float tolerance.");return;}
-    if(!force&&sourcePid&&sourcePid!=(u64)g_pid){CloseHandle(h);char b[360];usize n=0;append_str(b,sizeof(b),n,"Refusing scan session: saved PID ");append_u64_dec(b,sizeof(b),n,sourcePid);append_str(b,sizeof(b),n," != attached PID ");append_u64_dec(b,sizeof(b),n,g_pid);append_str(b,sizeof(b),n,". Use scan-load <file> force only for intentional stale-address testing.\r\n");flush_buf(b,n);return;}
-    clear_results();clear_snapshot();if(resultCount&&!reserve_results((usize)resultCount)){CloseHandle(h);println("Out of memory loading scan session.");return;}
-    bool mixed=(flags&1)!=0;for(u64 i=0;ok&&i<resultCount;++i){u64 address=0,previous=0;u32 tc=0,reserved=0;ok=file_read_exact(h,&address,8)&&file_read_exact(h,&previous,8)&&file_read_exact(h,&tc,4)&&file_read_exact(h,&reserved,4);ValueType t=scan_type_from_code(tc);if(!ok||reserved||t==ValueType::Invalid||(!mixed&&t!=primaryType)){ok=false;break;}Result& r=g_results[g_resultCount++];r.address=(uptr)address;memzero(r.previous,8);memcopy(r.previous,&previous,8);r.type=(u8)t;}
-    if(ok){u8 extra=0;DWORD got=0;if(!ReadFile(h,&extra,1,&got,nullptr)||got!=0)ok=false;}CloseHandle(h);
-    if(!ok){clear_results();g_type=ValueType::Invalid;println("Scan-session load failed: malformed/truncated result list.");return;}
-    g_type=mixed?ValueType::Mixed:primaryType;g_alignmentByte=alignment!=0;refresh_result_type_counts();
-    char b[420];usize n=0;append_str(b,sizeof(b),n,"Loaded ");append_u64_dec(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n," scan result(s) from '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"'");if(force&&sourcePid&&sourcePid!=(u64)g_pid)append_str(b,sizeof(b),n," [FORCED PID MISMATCH]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);
-}
-
-static bool load_aob_session_file(const char* path,bool restoreResults,bool verbose){
-    if(!path||!*path)return false;if(restoreResults&&!g_process){println("Attach to a process first so module-relative AOB matches can be rebased.");return false;}
-    HANDLE h=CreateFileA(path,GENERIC_READ,1,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);if((uptr)h==INVALID_HANDLE_BITS){print_last_error("AOB session open failed");return false;}
-    const char expect[8]={'C','W','A','O','B','0','0','1'};const char legacy[8]={'M','C','E','A','O','B','0','1'};char magic[8]={};u32 ver=0,scope=0,pc=0;u16 moduleLen=0;u64 resultCount=0;
-    bool ok=file_read_exact(h,magic,8)&&file_read_exact(h,&ver,4)&&file_read_exact(h,&scope,4)&&file_read_exact(h,&pc,4)&&file_read_exact(h,&moduleLen,2)&&file_read_exact(h,&resultCount,8);
-    if(!ok||(!memequal(magic,expect,8)&&!memequal(magic,legacy,8))||ver!=1||scope>3||pc==0||pc>MAX_AOB_PATTERN||moduleLen>=sizeof(g_aobModule)||resultCount>MAX_AOB_RESULTS){CloseHandle(h);println("Invalid/unsupported AOB session file.");return false;}
-    u8* pattern=(u8*)HeapAlloc(g_heap,0,(usize)pc*2);if(!pattern){CloseHandle(h);println("Out of memory.");return false;}u8* values=pattern;u8* masks=pattern+pc;
-    for(u32 i=0;ok&&i<pc;++i){ok=file_read_exact(h,&values[i],1)&&file_read_exact(h,&masks[i],1);if(ok&&masks[i]!=0&&masks[i]!=0x0F&&masks[i]!=0xF0&&masks[i]!=0xFF)ok=false;}
-    char moduleName[256]={};if(ok&&moduleLen){ok=file_read_exact(h,moduleName,moduleLen);moduleName[moduleLen]=0;}if(ok&&(scope>=2)&&moduleLen==0)ok=false;
-    if(!ok){HeapFree(g_heap,0,pattern);CloseHandle(h);println("AOB session file is truncated or malformed.");return false;}
-    if(restoreResults){g_aobCount=0;if(!refresh_modules()){HeapFree(g_heap,0,pattern);CloseHandle(h);return false;}}
-    usize skipped=0,absolute=0;
-    for(u64 i=0;ok&&i<resultCount;++i){u8 kind=0;u16 nameLen=0;u64 value=0;ok=file_read_exact(h,&kind,1)&&file_read_exact(h,&nameLen,2)&&file_read_exact(h,&value,8);if(!ok||kind>1||nameLen>=256||(kind==0&&nameLen!=0)){ok=false;break;}char resultModule[256]={};if(nameLen){ok=file_read_exact(h,resultModule,nameLen);if(!ok)break;resultModule[nameLen]=0;}if(kind==1&&nameLen==0){ok=false;break;}
-        if(restoreResults){if(kind==0){if(!add_aob((uptr)value)){ok=false;break;}++absolute;}else{int mi=module_by_name(resultModule);if(mi<0||value>=g_modules[mi].size||g_modules[mi].base>~(uptr)0-(uptr)value){++skipped;}else if(!add_aob(g_modules[mi].base+(uptr)value)){ok=false;break;}}}
-    }
-    if(ok){u8 extra=0;DWORD got=0;if(!ReadFile(h,&extra,1,&got,nullptr)||got!=0)ok=false;}CloseHandle(h);
-    if(!ok){HeapFree(g_heap,0,pattern);if(restoreResults)g_aobCount=0;println("AOB session load failed: malformed/truncated file.");return false;}
-    g_aobPatternCount=pc;for(usize i=0;i<pc;++i){g_aobPatternValues[i]=values[i];g_aobPatternMasks[i]=masks[i];}g_aobScope=scope;strcopy(g_aobModule,sizeof(g_aobModule),moduleName);HeapFree(g_heap,0,pattern);
-    if(verbose){char b[420];usize n=0;append_str(b,sizeof(b),n,"Loaded AOB session '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"': ");append_u64_dec(b,sizeof(b),n,g_aobCount);append_str(b,sizeof(b),n," match(es)");if(skipped){append_str(b,sizeof(b),n,", ");append_u64_dec(b,sizeof(b),n,skipped);append_str(b,sizeof(b),n," module-relative skipped");}if(absolute){append_str(b,sizeof(b),n,", ");append_u64_dec(b,sizeof(b),n,absolute);append_str(b,sizeof(b),n," absolute may be stale");}append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);}return true;
-}
-static void cmd_aob_save(const char* path){
-    if(!path||!*path){println("Usage: aob-save <file.cwaob>");return;}if(!g_process){println("Attach to the process that produced the AOB results before saving.");return;}if(!g_aobPatternCount){println("No active AOB signature to save.");return;}if(!refresh_modules())return;
-    HANDLE h=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if((uptr)h==INVALID_HANDLE_BITS){print_last_error("AOB save open failed");return;}const char magic[8]={'C','W','A','O','B','0','0','1'};u32 ver=1,scope=g_aobScope,pc=(u32)g_aobPatternCount;usize ml=cstrlen(g_aobModule);u16 moduleLen=(u16)ml;u64 rc=(u64)g_aobCount;
-    bool ok=file_write_all(h,magic,8)&&file_write_all(h,&ver,4)&&file_write_all(h,&scope,4)&&file_write_all(h,&pc,4)&&file_write_all(h,&moduleLen,2)&&file_write_all(h,&rc,8);for(usize i=0;ok&&i<g_aobPatternCount;++i)ok=file_write_all(h,&g_aobPatternValues[i],1)&&file_write_all(h,&g_aobPatternMasks[i],1);if(ok&&moduleLen)ok=file_write_all(h,g_aobModule,moduleLen);
-    for(usize i=0;ok&&i<g_aobCount;++i){u8 kind=0;u16 nameLen=0;u64 value=(u64)g_aobResults[i];const char* name=nullptr;for(usize m=0;m<g_moduleCount;++m){uptr base=g_modules[m].base;if(g_aobResults[i]>=base&&g_aobResults[i]-base<g_modules[m].size){kind=1;name=g_modules[m].name;nameLen=(u16)cstrlen(name);value=(u64)(g_aobResults[i]-base);break;}}ok=file_write_all(h,&kind,1)&&file_write_all(h,&nameLen,2)&&file_write_all(h,&value,8);if(ok&&nameLen)ok=file_write_all(h,name,nameLen);}
-    CloseHandle(h);if(!ok){println("AOB save failed while writing file.");return;}char b[360];usize n=0;append_str(b,sizeof(b),n,"Saved AOB session '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"': ");append_u64_dec(b,sizeof(b),n,g_aobCount);append_str(b,sizeof(b),n," match(es).\r\n");flush_buf(b,n);
-}
-static void cmd_aob_load(const char* path){if(!path||!*path){println("Usage: aob-load <file.cwaob>");return;}load_aob_session_file(path,true,true);}
-static void cmd_aob_rerun(const char* path){if(!path||!*path){println("Usage: aob-rerun <file.cwaob>");return;}if(!g_process){println("Attach to a process first.");return;}if(!load_aob_session_file(path,false,false))return;bool execOnly=(g_aobScope==1||g_aobScope==3);const char* module=(g_aobScope>=2)?g_aobModule:nullptr;char savedModule[256];strcopy(savedModule,sizeof(savedModule),g_aobModule);u32 savedScope=g_aobScope;usize savedCount=g_aobPatternCount;u8* pattern=(u8*)HeapAlloc(g_heap,0,savedCount*2);if(!pattern){println("Out of memory.");return;}u8* values=pattern;u8* masks=pattern+savedCount;for(usize i=0;i<savedCount;++i){values[i]=g_aobPatternValues[i];masks[i]=g_aobPatternMasks[i];}bool ok=scan_aob_pattern(values,masks,savedCount,execOnly,module,true);HeapFree(g_heap,0,pattern);if(ok){g_aobScope=savedScope;strcopy(g_aobModule,sizeof(g_aobModule),savedModule);}}
-
-static bool resolve_signed_relative(uptr instruction,usize size,i64 displacement,uptr& target){if(instruction>~(uptr)0-(uptr)size)return false;uptr next=instruction+(uptr)size;if(displacement>=0){u64 amount=(u64)displacement;if(amount>(u64)(~(uptr)0-next))return false;target=next+(uptr)amount;return true;}u64 mag=(u64)(-(displacement+1))+1;if(mag>(u64)next)return false;target=next-(uptr)mag;return true;}
-static void append_module_for_address(char* b,usize cap,usize& n,uptr address){for(usize m=0;m<g_moduleCount;++m){uptr base=g_modules[m].base;if(address>=base&&address-base<g_modules[m].size){append_str(b,cap,n,"  ");append_str(b,cap,n,g_modules[m].name);append_str(b,cap,n,"+");append_hex(b,cap,n,address-base);break;}}}
-static void cmd_aob_decode(const char* targetStr){
-    if(!g_process){println("Attach to a process first.");return;}uptr instruction=0;if(!parse_aob_target(targetStr,instruction)){println("Invalid AOB target. Use #0, #1, ... or an address.");return;}u8 bytes[16]={};SIZE_T got=0;if(!ReadProcessMemory((HANDLE)g_process,(LPCVOID)instruction,bytes,sizeof(bytes),&got)||got<2){print_last_error("Could not read instruction bytes");return;}BOOL wow=0;IsWow64Process((HANDLE)g_process,&wow);bool x64=!wow;const char* kind=nullptr;usize size=0,dispOff=0,dispSize=0;bool indirect=false;uptr target=0;i64 disp=0;
-    if(bytes[0]==0xE8&&got>=5){kind="CALL rel32";size=5;dispOff=1;dispSize=4;i32 d=0;memcopy(&d,bytes+1,4);disp=d;}
-    else if(bytes[0]==0xE9&&got>=5){kind="JMP rel32";size=5;dispOff=1;dispSize=4;i32 d=0;memcopy(&d,bytes+1,4);disp=d;}
-    else if(bytes[0]==0xEB&&got>=2){kind="JMP rel8";size=2;dispOff=1;dispSize=1;i8 d=0;memcopy(&d,bytes+1,1);disp=d;}
-    else if(bytes[0]>=0x70&&bytes[0]<=0x7F&&got>=2){kind="Jcc rel8";size=2;dispOff=1;dispSize=1;i8 d=0;memcopy(&d,bytes+1,1);disp=d;}
-    else if(bytes[0]==0x0F&&got>=6&&bytes[1]>=0x80&&bytes[1]<=0x8F){kind="Jcc rel32";size=6;dispOff=2;dispSize=4;i32 d=0;memcopy(&d,bytes+2,4);disp=d;}
-    else if(x64&&bytes[0]==0xFF&&got>=6&&(bytes[1]==0x15||bytes[1]==0x25)){kind=bytes[1]==0x15?"CALL [RIP+disp32]":"JMP [RIP+disp32]";size=6;dispOff=2;dispSize=4;indirect=true;i32 d=0;memcopy(&d,bytes+2,4);disp=d;}
-    else if(x64){usize pre=(bytes[0]>=0x40&&bytes[0]<=0x4F)?1:0;if(got>=pre+6){u8 op=bytes[pre],modrm=bytes[pre+1];bool common=op==0x8B||op==0x89||op==0x8D||op==0x39||op==0x3B||op==0x85;if(common&&(modrm&0xC7)==0x05){kind="RIP-relative memory";size=pre+6;dispOff=pre+2;dispSize=4;i32 d=0;memcopy(&d,bytes+dispOff,4);disp=d;}}}
-    if(!kind){println("No supported relative instruction form recognized.");return;}if(!resolve_signed_relative(instruction,size,disp,target)){println("Relative target overflow/underflow.");return;}refresh_modules();char b[520];usize n=0;append_str(b,sizeof(b),n,kind);append_str(b,sizeof(b),n," @ ");append_hex(b,sizeof(b),n,instruction);append_str(b,sizeof(b),n," | size=");append_u64_dec(b,sizeof(b),n,size);append_str(b,sizeof(b),n," | disp@+");append_hex(b,sizeof(b),n,dispOff);append_str(b,sizeof(b),n,indirect?" | slot=":" | target=");append_hex(b,sizeof(b),n,target);append_module_for_address(b,sizeof(b),n,target);append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);(void)dispSize;
-    if(indirect){u64 raw=0;SIZE_T r=0;usize ps=wow?4:8;if(ReadProcessMemory((HANDLE)g_process,(LPCVOID)target,&raw,ps,&r)&&r==ps){uptr destination=ps==4?(uptr)(u32)raw:(uptr)raw;char c[360];usize cn=0;append_str(c,sizeof(c),cn,"Indirect destination: ");append_hex(c,sizeof(c),cn,destination);append_module_for_address(c,sizeof(c),cn,destination);append_str(c,sizeof(c),cn,"\r\n");flush_buf(c,cn);}else println("Pointer slot could not be dereferenced.");}
-}
-static void cmd_pointer_save(const char* path){
-    if(!path||!*path){println("Usage: pointer-save <file.cwchain>");return;}if(!g_pointerChainCount){println("No stored pointer chains to save.");return;}if(g_chainPointerSize!=4&&g_chainPointerSize!=8){println("Stored chains have invalid pointer-width metadata.");return;}
-    HANDLE h=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if((uptr)h==INVALID_HANDLE_BITS){print_last_error("Pointer save open failed");return;}
-    const char magic[8]={'C','W','C','H','A','I','N','1'};u32 ver=2;u32 ps=g_chainPointerSize;u64 count=(u64)g_pointerChainCount;bool ok=file_write_all(h,magic,8)&&file_write_all(h,&ver,4)&&file_write_all(h,&ps,4)&&file_write_all(h,&count,8);
-    for(usize i=0;ok&&i<g_pointerChainCount;++i){PointerChain_& c=g_pointerChains[i];usize ml=cstrlen(c.module);if(ml==0||ml>255||c.depth==0||c.depth>MAX_POINTER_DEPTH){ok=false;break;}u16 mlen=(u16)ml;u64 root=(u64)c.rootOffset;u32 depth=(u32)c.depth;ok=file_write_all(h,&mlen,2)&&file_write_all(h,c.module,ml)&&file_write_all(h,&root,8)&&file_write_all(h,&depth,4);for(u32 j=0;ok&&j<depth;++j){u64 raw=0;memcopy(&raw,&c.offsets[j],8);ok=file_write_all(h,&raw,8);}}
-    CloseHandle(h);if(!ok){println("Pointer save failed while writing file.");return;}char b[300];usize n=0;append_str(b,sizeof(b),n,"Saved ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n," pointer chain(s) to '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"' (format v2).\r\n");flush_buf(b,n);
-}
-static void cmd_pointer_load(const char* path){
-    if(!path||!*path){println("Usage: pointer-load <file.cwchain>");return;}HANDLE h=CreateFileA(path,GENERIC_READ,1,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);if((uptr)h==INVALID_HANDLE_BITS){print_last_error("Pointer load open failed");return;}
-    char magic[8]={};u32 ver=0,ps=0;u64 count=0;bool ok=file_read_exact(h,magic,8)&&file_read_exact(h,&ver,4)&&file_read_exact(h,&ps,4)&&file_read_exact(h,&count,8);const char expect[8]={'C','W','C','H','A','I','N','1'};const char legacy[8]={'M','C','E','P','T','R','0','1'};
-    if(!ok||(!memequal(magic,expect,8)&&!memequal(magic,legacy,8))||(ver!=1&&ver!=2)||(ps!=4&&ps!=8)||count>MAX_POINTER_CHAINS){CloseHandle(h);println("Invalid or unsupported pointer-chain file.");return;}if(g_process&&ps!=g_pointerSize){CloseHandle(h);println("Pointer file width does not match attached target.");return;}
-    clear_pointer_index();g_pointerChainCount=0;if(!reserve_pointer_chains((usize)count)){CloseHandle(h);println("Could not allocate pointer chains.");return;}
-    for(u64 i=0;i<count;++i){u16 mlen=0;u64 root=0;u32 depth=0;if(!file_read_exact(h,&mlen,2)||mlen==0||mlen>=256){ok=false;break;}PointerChain_ c{};if(!file_read_exact(h,c.module,mlen)){ok=false;break;}c.module[mlen]=0;if(!file_read_exact(h,&root,8)||!file_read_exact(h,&depth,4)||depth==0||depth>MAX_POINTER_DEPTH){ok=false;break;}c.rootOffset=(uptr)root;c.depth=(u8)depth;
-        for(u32 j=0;j<depth;++j){u64 raw=0;if(!file_read_exact(h,&raw,8)){ok=false;break;}if(ver==1){if(raw>0x7FFFFFFFFFFFFFFFULL){ok=false;break;}c.offsets[j]=(i64)raw;}else memcopy(&c.offsets[j],&raw,8);}if(!ok)break;g_pointerChains[g_pointerChainCount++]=c;}
-    if(ok){u8 extra=0;DWORD got=0;if(!ReadFile(h,&extra,1,&got,nullptr))ok=false;else if(got!=0)ok=false;}CloseHandle(h);if(!ok){g_pointerChainCount=0;g_chainPointerSize=0;println("Pointer load failed: truncated or malformed file.");return;}
-    g_chainPointerSize=(u8)ps;g_pointerChainsTruncated=false;char b[340];usize n=0;append_str(b,sizeof(b),n,"Loaded ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n," pointer chain(s) from '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"' (");append_u64_dec(b,sizeof(b),n,(u64)g_chainPointerSize*8);append_str(b,sizeof(b),n,"-bit, format v");append_u64_dec(b,sizeof(b),n,ver);append_str(b,sizeof(b),n,").\r\n");flush_buf(b,n);
-}
-static bool ptr_addr_less(const PointerEntry& a,const PointerEntry& b){return a.address<b.address||(a.address==b.address&&a.value<b.value);}
-static void sort_entries_by_address(PointerEntry* a,usize count){if(!a||count<2)return;auto sift=[&](usize start,usize n){usize root=start;for(;;){usize child=root*2+1;if(child>=n)return;usize best=root;if(ptr_addr_less(a[best],a[child]))best=child;if(child+1<n&&ptr_addr_less(a[best],a[child+1]))best=child+1;if(best==root)return;PointerEntry t=a[root];a[root]=a[best];a[best]=t;root=best;}};for(usize i=count/2;i>0;--i)sift(i-1,count);for(usize end=count;end>1;--end){PointerEntry t=a[0];a[0]=a[end-1];a[end-1]=t;sift(0,end-1);}}
-static bool map_pointer_at(PointerMap_& m,uptr address,uptr& value){if(!m.entriesByAddress){sort_entries_by_address(m.entries,m.entryCount);m.entriesByAddress=true;}usize lo=0,hi=m.entryCount;while(lo<hi){usize mid=lo+(hi-lo)/2;if(m.entries[mid].address<address)lo=mid+1;else hi=mid;}if(lo>=m.entryCount||m.entries[lo].address!=address)return false;value=m.entries[lo].value;return true;}
-static int map_module_by_name(PointerMap_& m,const char* name){for(usize i=0;i<m.moduleCount;++i)if(strieq(m.modules[i].name,name))return (int)i;return -1;}
-static bool resolve_chain_map(PointerMap_& m,const PointerChain_& c,uptr& resolved){int mi=map_module_by_name(m,c.module);if(mi<0||c.rootOffset>=m.modules[mi].size)return false;uptr addr=m.modules[mi].base+c.rootOffset;for(u8 i=0;i<c.depth;++i){uptr pv=0;if(!map_pointer_at(m,addr,pv))return false;if(!add_signed_offset(pv,c.offsets[i],addr))return false;}resolved=addr;return true;}
+static void clear_freezes(){char engineError[256]{};if(cw_gui_engine_connected())cw_gui_engine_freeze_clear(engineError,sizeof(engineError));for(int i=0;i<MAX_FREEZES;++i){g_freezes[i].active=0;g_freezeIds[i]=0;}}
 static void free_pointer_maps(){for(usize i=0;i<g_pointerMapCount;++i){if(g_pointerMaps[i].entries)HeapFree(g_heap,0,g_pointerMaps[i].entries);memzero(&g_pointerMaps[i],sizeof(g_pointerMaps[i]));}g_pointerMapCount=0;}
-static void cmd_pmap_clear(){free_pointer_maps();println("Loaded pointer maps cleared.");}
-static void cmd_pmap_capture(const char* path,const char* targetStr,const char* maxStr){if(!g_process){println("Attach to a process first.");return;}if(!path||!*path||!targetStr){println("Usage: pmap-capture <file.cwmap> <#result|address> [max_entries]");return;}uptr target=0;if(!parse_target_address(targetStr,target)){println("Invalid target.");return;}u64 limit=MAX_POINTER_ENTRIES;if(maxStr&&!parse_u64(maxStr,limit)){println("Invalid max_entries.");return;}if(limit<1||limit>MAX_POINTER_ENTRIES){println("Portable build limit: max_entries 1..8000000.");return;}if(!refresh_modules())return;BOOL wow=0;if(IsWow64Process((HANDLE)g_process,&wow))g_pointerSize=wow?4:8;usize oldLimit=g_pointerIndexLimit;g_pointerIndexLimit=(usize)limit;bool built=build_pointer_index();g_pointerIndexLimit=oldLimit;if(!built&&g_pointerCount==0){println("Pointer-map capture found no pointer entries.");return;}HANDLE h=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if((uptr)h==INVALID_HANDLE_BITS){print_last_error("Pointer-map open failed");return;}const char magic[8]={'C','W','M','A','P','0','0','1'};u32 ver=1,ps=g_pointerSize,mc=(u32)g_moduleCount,flags=g_pointerIndexTruncated?0u:1u;u64 tgt=(u64)target,ec=(u64)g_pointerCount;bool ok=file_write_all(h,magic,8)&&file_write_all(h,&ver,4)&&file_write_all(h,&ps,4)&&file_write_all(h,&tgt,8)&&file_write_all(h,&mc,4)&&file_write_all(h,&ec,8)&&file_write_all(h,&flags,4);for(usize i=0;ok&&i<g_moduleCount;++i){usize nl=cstrlen(g_modules[i].name);if(nl==0||nl>255){ok=false;break;}u64 base=(u64)g_modules[i].base,size=g_modules[i].size;u16 nlen=(u16)nl;ok=file_write_all(h,&base,8)&&file_write_all(h,&size,8)&&file_write_all(h,&nlen,2)&&file_write_all(h,g_modules[i].name,nl);}for(usize i=0;ok&&i<g_pointerCount;++i){u64 v=(u64)g_pointerIndex[i].value,a=(u64)g_pointerIndex[i].address;ok=file_write_all(h,&v,8)&&file_write_all(h,&a,8);}CloseHandle(h);if(!ok){println("Pointer-map save failed while writing file.");return;}char b[360];usize n=0;append_str(b,sizeof(b),n,"Saved pointer map '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"': ");append_u64_dec(b,sizeof(b),n,g_pointerCount);append_str(b,sizeof(b),n," entries, target ");append_hex(b,sizeof(b),n,target);if(g_pointerIndexTruncated)append_str(b,sizeof(b),n," [PARTIAL/TRUNCATED]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);clear_pointer_index();}
-static void free_pointer_map_one(PointerMap_& m){if(m.entries)HeapFree(g_heap,0,m.entries);memzero(&m,sizeof(m));}
-static bool load_pointer_map_file(const char* path,PointerMap_& m,u8 expectedWidth,bool quiet){
-    memzero(&m,sizeof(m));
-    if(!path||!*path){if(!quiet)println("Pointer-map path is required.");return false;}
-    HANDLE h=CreateFileA(path,GENERIC_READ,1,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if((uptr)h==INVALID_HANDLE_BITS){if(!quiet)print_last_error("Pointer-map open failed");return false;}
-    char magic[8]={};u32 ver=0,ps=0,mc=0,flags=0;u64 target=0,ec=0;
-    bool ok=file_read_exact(h,magic,8)&&file_read_exact(h,&ver,4)&&file_read_exact(h,&ps,4)&&file_read_exact(h,&target,8)&&file_read_exact(h,&mc,4)&&file_read_exact(h,&ec,8)&&file_read_exact(h,&flags,4);
-    const char expect[8]={'C','W','M','A','P','0','0','1'};const char legacy[8]={'M','C','E','P','M','A','P','1'};
-    if(!ok||(!memequal(magic,expect,8)&&!memequal(magic,legacy,8))||ver!=1||(ps!=4&&ps!=8)||mc>MAX_MODULES||ec>MAX_POINTER_ENTRIES||(expectedWidth&&ps!=expectedWidth)){
-        CloseHandle(h);if(!quiet)println(expectedWidth&&ps!=expectedWidth?"Pointer-map width mismatch.":"Invalid/unsupported pointer map or exceeds portable limits.");return false;
-    }
-    m.pointerSize=(u8)ps;m.complete=(flags&1)!=0;m.target=(uptr)target;m.moduleCount=mc;strcopy(m.path,sizeof(m.path),path);
-    for(usize i=0;ok&&i<m.moduleCount;++i){u64 base=0,size=0;u16 nl=0;if(!file_read_exact(h,&base,8)||!file_read_exact(h,&size,8)||!file_read_exact(h,&nl,2)||nl==0||nl>=256){ok=false;break;}m.modules[i].base=(uptr)base;m.modules[i].size=size;if(!file_read_exact(h,m.modules[i].name,nl)){ok=false;break;}m.modules[i].name[nl]=0;}
-    m.entryCount=(usize)ec;if(ok&&m.entryCount){m.entries=(PointerEntry*)HeapAlloc(g_heap,0,m.entryCount*sizeof(PointerEntry));if(!m.entries)ok=false;}
-    for(usize i=0;ok&&i<m.entryCount;++i){u64 v=0,a=0;if(!file_read_exact(h,&v,8)||!file_read_exact(h,&a,8)){ok=false;break;}m.entries[i]={(uptr)v,(uptr)a};}
-    if(ok){u8 extra=0;DWORD got=0;if(!ReadFile(h,&extra,1,&got,nullptr)||got!=0)ok=false;}
-    CloseHandle(h);
-    if(!ok){free_pointer_map_one(m);if(!quiet)println("Pointer-map load failed: malformed/truncated file.");return false;}
-    return true;
-}
-static void cmd_pmap_load(const char* path){
-    if(!path||!*path){println("Usage: pmap-load <file.cwmap>");return;}
-    if(g_pointerMapCount>=MAX_POINTER_MAPS){println("Portable build supports at most 4 loaded pointer maps.");return;}
-    PointerMap_& m=g_pointerMaps[g_pointerMapCount];u8 expected=g_pointerMapCount?g_pointerMaps[0].pointerSize:0;
-    if(!load_pointer_map_file(path,m,expected,false))return;
-    ++g_pointerMapCount;char b[360];usize n=0;append_str(b,sizeof(b),n,"Loaded pointer map #");append_u64_dec(b,sizeof(b),n,g_pointerMapCount-1);append_str(b,sizeof(b),n," '");append_str(b,sizeof(b),n,path);append_str(b,sizeof(b),n,"': ");append_u64_dec(b,sizeof(b),n,m.entryCount);append_str(b,sizeof(b),n," entries, target ");append_hex(b,sizeof(b),n,m.target);if(!m.complete)append_str(b,sizeof(b),n," [PARTIAL]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);
-}
-static void cmd_pmap_list(){if(!g_pointerMapCount){println("No pointer maps loaded.");return;}for(usize i=0;i<g_pointerMapCount;++i){PointerMap_& m=g_pointerMaps[i];char b[480];usize n=0;append_str(b,sizeof(b),n,"M#");append_u64_dec(b,sizeof(b),n,i);append_str(b,sizeof(b),n,"  ");append_str(b,sizeof(b),n,m.path);append_str(b,sizeof(b),n," | ");append_u64_dec(b,sizeof(b),n,(u64)m.pointerSize*8);append_str(b,sizeof(b),n,"-bit | entries ");append_u64_dec(b,sizeof(b),n,m.entryCount);append_str(b,sizeof(b),n," | target ");append_hex(b,sizeof(b),n,m.target);append_str(b,sizeof(b),n,m.complete?" | complete\r\n":" | PARTIAL\r\n");flush_buf(b,n);}}
-static void cmd_pmap_compare(const char* depthStr,const char* offsetStr,const char* chainsStr,const char* negativeStr){
-    if(!g_pointerMapCount){println("Load at least one pointer map first.");return;}u64 depth=3,maxOffset=0x1000,maxNegativeOffset=0,maxChains=MAX_POINTER_CHAINS;
-    if(depthStr&&!parse_u64(depthStr,depth)){println("Invalid depth.");return;}if(offsetStr&&!parse_u64(offsetStr,maxOffset)){println("Invalid max_offset.");return;}if(chainsStr&&!parse_u64(chainsStr,maxChains)){println("Invalid max_chains.");return;}if(negativeStr&&!parse_u64(negativeStr,maxNegativeOffset)){println("Invalid max_negative_offset.");return;}
-    if(depth<1||depth>MAX_POINTER_DEPTH||maxOffset>0x1000000ULL||maxNegativeOffset>0x1000000ULL||maxChains<1||maxChains>MAX_POINTER_CHAINS){println("Limits: depth 1..8, offsets <= 0x1000000, max_chains <= 10000.");return;}
-    PointerMap_& first=g_pointerMaps[0];if(first.entriesByAddress){println("First loaded map was reordered by a previous operation; reload maps before comparing again.");return;}
-    PointerEntry* savedIndex=g_pointerIndex;usize savedCount=g_pointerCount,savedCap=g_pointerCap;bool savedTrunc=g_pointerIndexTruncated;u8 savedPS=g_pointerSize;usize savedMC=g_moduleCount;ModuleInfo_* savedModules=(ModuleInfo_*)HeapAlloc(g_heap,0,MAX_MODULES*sizeof(ModuleInfo_));if(!savedModules){println("Out of memory.");return;}for(usize i=0;i<savedMC;++i)savedModules[i]=g_modules[i];
-    g_pointerIndex=first.entries;g_pointerCount=first.entryCount;g_pointerCap=first.entryCount;g_pointerIndexTruncated=false;g_pointerSize=first.pointerSize;g_moduleCount=first.moduleCount;for(usize i=0;i<g_moduleCount;++i)g_modules[i]=first.modules[i];clear_pointer_chains();g_chainPointerSize=first.pointerSize;
-    i64 rev[MAX_POINTER_DEPTH]={};uptr path[MAX_POINTER_DEPTH+1]={};path[0]=first.target;pointer_dfs(first.target,(u8)depth,(uptr)maxOffset,(uptr)maxNegativeOffset,(usize)maxChains,rev,0,path,1);usize initial=g_pointerChainCount;
-    g_pointerIndex=savedIndex;g_pointerCount=savedCount;g_pointerCap=savedCap;g_pointerIndexTruncated=savedTrunc;g_pointerSize=savedPS;g_moduleCount=savedMC;for(usize i=0;i<savedMC;++i)g_modules[i]=savedModules[i];HeapFree(g_heap,0,savedModules);
-    for(usize mi=1;mi<g_pointerMapCount&&g_pointerChainCount;++mi){PointerMap_& m=g_pointerMaps[mi];usize out=0;for(usize ci=0;ci<g_pointerChainCount;++ci){uptr resolved=0;if(resolve_chain_map(m,g_pointerChains[ci],resolved)&&resolved==m.target){if(out!=ci)g_pointerChains[out]=g_pointerChains[ci];++out;}}g_pointerChainCount=out;}
-    char b[380];usize n=0;append_str(b,sizeof(b),n,"Pointer-map compare: ");append_u64_dec(b,sizeof(b),n,initial);append_str(b,sizeof(b),n," initial -> ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n," common chain(s) across ");append_u64_dec(b,sizeof(b),n,g_pointerMapCount);append_str(b,sizeof(b),n," map(s), max negative offset ");append_hex(b,sizeof(b),n,(uptr)maxNegativeOffset);if(g_pointerChainsTruncated)append_str(b,sizeof(b),n," [INITIAL SEARCH TRUNCATED]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);usize preview=g_pointerChainCount<20?g_pointerChainCount:20;for(usize i=0;i<preview;++i)print_pointer_chain(i);
-}
-static void cmd_pmap_compare_files(char** paths,int count){
-    if(count<2){println("Usage: pmap-compare-files <file1> <file2> [file3 ...]");return;}
-    if(count>16){println("At most 16 pointer-map files may be compared at once.");return;}
-    const u8 depth=3;const uptr maxOffset=0x1000;const uptr maxNegativeOffset=0;const usize maxChains=MAX_POINTER_CHAINS;
-    PointerMap_* first=(PointerMap_*)HeapAlloc(g_heap,0,sizeof(PointerMap_));if(!first){println("Out of memory.");return;}memzero(first,sizeof(PointerMap_));
-    if(!load_pointer_map_file(paths[0],*first,0,false)){HeapFree(g_heap,0,first);return;}u8 width=first->pointerSize;usize peak=first->entryCount;usize partial=first->complete?0:1;
-    if(first->entriesByAddress){free_pointer_map_one(*first);HeapFree(g_heap,0,first);println("First map is not value-sorted.");return;}
-    PointerEntry* savedIndex=g_pointerIndex;usize savedCount=g_pointerCount,savedCap=g_pointerCap;bool savedTrunc=g_pointerIndexTruncated;u8 savedPS=g_pointerSize;usize savedMC=g_moduleCount;
-    ModuleInfo_* savedModules=(ModuleInfo_*)HeapAlloc(g_heap,0,MAX_MODULES*sizeof(ModuleInfo_));if(!savedModules){free_pointer_map_one(*first);HeapFree(g_heap,0,first);println("Out of memory.");return;}for(usize i=0;i<savedMC;++i)savedModules[i]=g_modules[i];
-    g_pointerIndex=first->entries;g_pointerCount=first->entryCount;g_pointerCap=first->entryCount;g_pointerIndexTruncated=false;g_pointerSize=first->pointerSize;g_moduleCount=first->moduleCount;for(usize i=0;i<g_moduleCount;++i)g_modules[i]=first->modules[i];clear_pointer_chains();g_chainPointerSize=width;
-    i64 rev[MAX_POINTER_DEPTH]={};uptr path[MAX_POINTER_DEPTH+1]={};path[0]=first->target;pointer_dfs(first->target,depth,maxOffset,maxNegativeOffset,maxChains,rev,0,path,1);usize initial=g_pointerChainCount;
-    g_pointerIndex=savedIndex;g_pointerCount=savedCount;g_pointerCap=savedCap;g_pointerIndexTruncated=savedTrunc;g_pointerSize=savedPS;g_moduleCount=savedMC;for(usize i=0;i<savedMC;++i)g_modules[i]=savedModules[i];HeapFree(g_heap,0,savedModules);free_pointer_map_one(*first);HeapFree(g_heap,0,first);
-    PointerMap_* current=(PointerMap_*)HeapAlloc(g_heap,0,sizeof(PointerMap_));if(!current){clear_pointer_chains();println("Out of memory.");return;}
-    for(int pi=1;pi<count;++pi){memzero(current,sizeof(PointerMap_));if(!load_pointer_map_file(paths[pi],*current,width,false)){free_pointer_map_one(*current);HeapFree(g_heap,0,current);clear_pointer_chains();return;}if(current->entryCount>peak)peak=current->entryCount;if(!current->complete)++partial;if(g_pointerChainCount){usize out=0;for(usize ci=0;ci<g_pointerChainCount;++ci){uptr resolved=0;if(resolve_chain_map(*current,g_pointerChains[ci],resolved)&&resolved==current->target){if(out!=ci)g_pointerChains[out]=g_pointerChains[ci];++out;}}g_pointerChainCount=out;}free_pointer_map_one(*current);}
-    HeapFree(g_heap,0,current);
-    char b[520];usize n=0;append_str(b,sizeof(b),n,"Streaming pointer-map compare: ");append_u64_dec(b,sizeof(b),n,initial);append_str(b,sizeof(b),n," initial -> ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n," common chain(s) across ");append_u64_dec(b,sizeof(b),n,count);append_str(b,sizeof(b),n," map(s) | peak loaded entries ");append_u64_dec(b,sizeof(b),n,peak);if(partial){append_str(b,sizeof(b),n," | WARNING partial maps: ");append_u64_dec(b,sizeof(b),n,partial);}if(g_pointerChainsTruncated)append_str(b,sizeof(b),n," | INITIAL SEARCH TRUNCATED");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);usize preview=g_pointerChainCount<20?g_pointerChainCount:20;for(usize i=0;i<preview;++i)print_pointer_chain(i);
-}
-static void cmd_pointer_clear(){clear_pointer_index();clear_pointer_chains();println("Pointer index and chains cleared.");}
-static void clear_freezes(){ for(int i=0;i<MAX_FREEZES;++i)g_freezes[i].active=0; }
-static void close_target(){ clear_freezes(); HANDLE old=(HANDLE)g_process; g_process=nullptr; if(old)CloseHandle(old); g_pid=0; clear_results(); clear_snapshot(); guided_reset(); clear_pointer_index(); g_moduleCount=0; g_type=ValueType::Invalid; }
+static void close_target(){ clear_freezes(); g_process=nullptr; char engineError[256]{};if(cw_gui_engine_attached())cw_gui_engine_detach(engineError,sizeof(engineError));g_pid=0; clear_results(); clear_snapshot(); guided_reset(); clear_pointer_index(); g_moduleCount=0; g_type=ValueType::Invalid; }
 static bool attach_pid(DWORD pid){
     close_target();
-    HANDLE h=OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ|PROCESS_VM_WRITE|PROCESS_VM_OPERATION,0,pid);
-    if(!h){print_last_error("OpenProcess failed");return false;}
-    g_process=h; g_pid=pid; BOOL wow=0; if(IsWow64Process(h,&wow))g_pointerSize=wow?4:8; else g_pointerSize=8;
+    u32 pointerSize=0;char engineError[256]{};if(!cw_gui_engine_attach((u32)pid,&pointerSize,engineError,sizeof(engineError))){SetLastError(5);return false;}
+    g_process=(HANDLE)(uptr)1;g_pid=pid;g_pointerSize=(pointerSize==4||pointerSize==8)?(u8)pointerSize:8;
     char b[180];usize n=0;append_str(b,sizeof(b),n,"Attached to PID ");append_u64_dec(b,sizeof(b),n,pid);append_str(b,sizeof(b),n," (pointer width ");append_u64_dec(b,sizeof(b),n,(u64)g_pointerSize*8);append_str(b,sizeof(b),n,"-bit).\r\n");flush_buf(b,n);
     return true;
 }
-static void cmd_attach(const char* s){ u64 pid=0;if(!parse_u64(s,pid)||pid>0xFFFFFFFFULL){println("Invalid PID.");return;} attach_pid((DWORD)pid); }
-static void cmd_attach_name(const char* name){
-    if(!name||!*name){println("Process name is required.");return;}
-    HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
-    if(snap==(HANDLE)(uptr)-1){print_last_error("CreateToolhelp32Snapshot failed");return;}
-    PROCESSENTRY32A_ e{}; e.dwSize=(DWORD)sizeof(e);
-    bool found=false; DWORD pid=0;
-    if(Process32First(snap,&e)){
-        do{ if(strieq(e.szExeFile,name)){ found=true; pid=e.th32ProcessID; break; } }while(Process32Next(snap,&e));
-    }
-    CloseHandle(snap);
-    if(!found){println("Process name not found.");return;}
-    attach_pid(pid);
-}
-static void cmd_detach(){ if(!g_process){println("No process attached.");return;} close_target(); println("Detached."); }
-static void cmd_clear(){ clear_results(); clear_snapshot(); guided_reset(); clear_aob(); g_type=ValueType::Invalid; println("Value scan/snapshot and AOB results cleared."); }
-
-static usize scan_start_offset(uptr base,usize alignment){if(g_alignmentByte||alignment<=1)return 0;usize rem=(usize)(base%alignment);return rem?alignment-rem:0;}
-
-static bool scan_exact(ValueType t,const u8* wanted){
-    HANDLE proc=(HANDLE)g_process;if(!proc){println("Attach to a process first.");return false;}
-    clear_results();clear_snapshot();g_type=t;u8 sz=type_size(t);usize step=g_alignmentByte?1:sz;
-    SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);uptr cur=(uptr)si.lpMinimumApplicationAddress;uptr max=(uptr)si.lpMaximumApplicationAddress;
-    u8* buf=(u8*)HeapAlloc(g_heap,0,SCAN_CHUNK+8);if(!buf){println("Out of memory.");return false;}
-    usize regions=0;bool truncated=false;
-    while(cur<max){
-        MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx(proc,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;
-        uptr base=(uptr)mbi.BaseAddress;uptr end=base+(uptr)mbi.RegionSize;if(end<=cur)break;
-        if(mbi.State==MEM_COMMIT&&readable(mbi.Protect)){
-            ++regions;uptr p=base;
-            while(p<end){
-                usize primary=(usize)((end-p)>SCAN_CHUNK?SCAN_CHUNK:(end-p));usize extra=(p+primary<end)?(usize)(sz-1):0;
-                usize toRead=primary+extra;if(p+toRead>end)toRead=(usize)(end-p);SIZE_T got=0;
-                if(ReadProcessMemory(proc,(LPCVOID)p,buf,toRead,&got)&&got>=sz){
-                    usize startOff=scan_start_offset(p,sz);
-                    for(usize off=startOff;off<primary&&off+sz<=(usize)got;off+=step){
-                        if(memequal(buf+off,wanted,sz)&&!add_result(p+off,buf+off,sz,t)){truncated=true;break;}
-                    }
-                }
-                if(truncated)break;p+=primary;
-            }
-        }
-        if(truncated)break;cur=end;
-    }
-    HeapFree(g_heap,0,buf);
-    char b[256];usize n=0;append_str(b,sizeof(b),n,"Scan complete. Found ");append_u64_dec(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n," result(s) across ");append_u64_dec(b,sizeof(b),n,regions);append_str(b,sizeof(b),n," readable region(s)");if(truncated)append_str(b,sizeof(b),n," [TRUNCATED]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);return true;
-}
-
-static bool scan_all_exact(const char* text){
-    HANDLE proc=(HANDLE)g_process;if(!proc){println("Attach to a process first.");return false;}
-    const ValueType types[6]={ValueType::Byte,ValueType::Int16,ValueType::Int32,ValueType::Int64,ValueType::Float,ValueType::Double};
-    u8 wanted[6][8]{};bool enabled[6]{};usize enabledCount=0;
-    for(usize i=0;i<6;++i){enabled[i]=encode_value(types[i],text,wanted[i]);if(enabled[i])++enabledCount;}
-    if(!enabledCount){println("Value is not valid for any supported numeric type.");return false;}
-    clear_results();clear_snapshot();g_type=ValueType::Mixed;
-    SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);uptr cur=(uptr)si.lpMinimumApplicationAddress;uptr max=(uptr)si.lpMaximumApplicationAddress;
-    u8* buf=(u8*)HeapAlloc(g_heap,0,SCAN_CHUNK+8);if(!buf){println("Out of memory.");return false;}
-    usize regions=0;bool truncated=false;
-    while(cur<max){
-        MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx(proc,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;
-        uptr base=(uptr)mbi.BaseAddress;uptr end=base+(uptr)mbi.RegionSize;if(end<=cur)break;
-        if(mbi.State==MEM_COMMIT&&readable(mbi.Protect)){
-            ++regions;uptr p=base;
-            while(p<end){
-                usize primary=(usize)((end-p)>SCAN_CHUNK?SCAN_CHUNK:(end-p));usize extra=(p+primary<end)?7:0;
-                usize toRead=primary+extra;if(p+toRead>end)toRead=(usize)(end-p);SIZE_T got=0;
-                if(ReadProcessMemory(proc,(LPCVOID)p,buf,toRead,&got)&&got>0){
-                    for(usize ti=0;ti<6&&!truncated;++ti){
-                        if(!enabled[ti])continue;ValueType t=types[ti];u8 sz=type_size(t);if(got<sz)continue;usize step=g_alignmentByte?1:sz;usize startOff=scan_start_offset(p,sz);
-                        for(usize off=startOff;off<primary&&off+sz<=(usize)got;off+=step){
-                            if(memequal(buf+off,wanted[ti],sz)&&!add_result(p+off,buf+off,sz,t)){truncated=true;break;}
-                        }
-                    }
-                }
-                if(truncated)break;p+=primary;
-            }
-        }
-        if(truncated)break;cur=end;
-    }
-    HeapFree(g_heap,0,buf);
-    char b[320];usize n=0;append_str(b,sizeof(b),n,"Mixed scan complete. ");append_u64_dec(b,sizeof(b),n,enabledCount);append_str(b,sizeof(b),n," compatible type(s), ");append_u64_dec(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n," result(s) across ");append_u64_dec(b,sizeof(b),n,regions);append_str(b,sizeof(b),n," readable region(s)");if(truncated)append_str(b,sizeof(b),n," [TRUNCATED]");append_str(b,sizeof(b),n,".\r\n");flush_buf(b,n);return true;
-}
-
-
-static bool scan_all_unknown(bool smart){
-    HANDLE proc=(HANDLE)g_process;if(!proc){println("Attach to a process first.");return false;}
-    clear_results();clear_snapshot();g_type=ValueType::Mixed;
-    SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);uptr cur=(uptr)si.lpMinimumApplicationAddress,max=(uptr)si.lpMaximumApplicationAddress;
-    u8* buf=(u8*)HeapAlloc(g_heap,0,SCAN_CHUNK+8);if(!buf){println("Out of memory.");return false;}
-    usize regions=0;bool truncated=false;
-    while(cur<max&&!truncated){
-        MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx(proc,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;
-        uptr base=(uptr)mbi.BaseAddress,end=base+(uptr)mbi.RegionSize;if(end<=cur)break;
-        bool allowed=mbi.State==MEM_COMMIT&&readable(mbi.Protect);if(allowed&&smart&&(mbi.Type!=MEM_PRIVATE||!writable(mbi.Protect)))allowed=false;
-        if(allowed){
-            ++regions;uptr p=base;
-            while(p<end){
-                usize primary=(usize)((end-p)>SCAN_CHUNK?SCAN_CHUNK:(end-p));usize extra=(p+primary<end)?7:0;
-                usize toRead=primary+extra;if(p+toRead>end)toRead=(usize)(end-p);SIZE_T got=0;
-                ReadProcessMemory(proc,(LPCVOID)p,buf,toRead,&got);
-                if(got>0){
-                    usize candidateBytes=primary<(usize)got?primary:(usize)got;
-                    if(!add_snapshot_block(p,buf,(usize)got,candidateBytes,ValueType::Mixed)){truncated=true;break;}
-                }
-                p+=primary;
-            }
-        }
-        cur=end;
-    }
-    HeapFree(g_heap,0,buf);if(truncated){clear_snapshot();g_type=ValueType::Invalid;println("Unknown snapshot storage failed. Scan state cleared.");return false;}g_snapshotActive=g_snapshotCount>0;
-    char b[440];usize n=0;append_str(b,sizeof(b),n,"Mixed unknown snapshot: ");append_u64_dec(b,sizeof(b),n,g_snapshotCount);append_str(b,sizeof(b),n," block(s), ");append_u64_dec(b,sizeof(b),n,g_snapshotBytes);append_str(b,sizeof(b),n," byte(s), ");append_u64_dec(b,sizeof(b),n,g_snapshotCandidates);append_str(b,sizeof(b),n," typed candidate(s) across ");append_u64_dec(b,sizeof(b),n,regions);append_str(b,sizeof(b),n," readable region(s) [TEMP DISK BACKING]. Change/refine the value, then run Next Scan.\r\n");flush_buf(b,n);
-    return g_snapshotActive;
-}
-
-static bool scan_unknown(ValueType t,bool smart){
-    HANDLE proc=(HANDLE)g_process;if(!proc){println("Attach to a process first.");return false;}
-    clear_results();clear_snapshot();g_type=t;u8 sz=type_size(t);if(!sz)return false;
-    SYSTEM_INFO_ si{};GetNativeSystemInfo(&si);uptr cur=(uptr)si.lpMinimumApplicationAddress,max=(uptr)si.lpMaximumApplicationAddress;
-    u8* buf=(u8*)HeapAlloc(g_heap,0,SCAN_CHUNK+8);if(!buf){println("Out of memory.");return false;}
-    usize regions=0;bool truncated=false;
-    while(cur<max&&!truncated){
-        MEMORY_BASIC_INFORMATION_ mbi{};SIZE_T q=VirtualQueryEx(proc,(LPCVOID)cur,&mbi,sizeof(mbi));if(!q)break;
-        uptr base=(uptr)mbi.BaseAddress,end=base+(uptr)mbi.RegionSize;if(end<=cur)break;
-        bool allowed=mbi.State==MEM_COMMIT&&readable(mbi.Protect);if(allowed&&smart&&(mbi.Type!=MEM_PRIVATE||!writable(mbi.Protect)))allowed=false;
-        if(allowed){
-            ++regions;uptr p=base;
-            while(p<end){
-                usize primary=(usize)((end-p)>SCAN_CHUNK?SCAN_CHUNK:(end-p));usize extra=(p+primary<end)?(usize)(sz-1):0;
-                usize toRead=primary+extra;if(p+toRead>end)toRead=(usize)(end-p);SIZE_T got=0;
-                ReadProcessMemory(proc,(LPCVOID)p,buf,toRead,&got);
-                if(got>0){usize candidateBytes=primary<(usize)got?primary:(usize)got;if(!add_snapshot_block(p,buf,(usize)got,candidateBytes,t)){truncated=true;break;}}
-                p+=primary;
-            }
-        }
-        cur=end;
-    }
-    HeapFree(g_heap,0,buf);if(truncated){clear_snapshot();g_type=ValueType::Invalid;println("Unknown snapshot storage failed. Scan state cleared.");return false;}g_snapshotActive=g_snapshotCount>0;
-    char b[420];usize n=0;append_str(b,sizeof(b),n,"Unknown snapshot [");append_str(b,sizeof(b),n,type_name(t));append_str(b,sizeof(b),n,"]: ");append_u64_dec(b,sizeof(b),n,g_snapshotCandidates);append_str(b,sizeof(b),n," candidate(s), ");append_u64_dec(b,sizeof(b),n,g_snapshotBytes);append_str(b,sizeof(b),n," byte(s) across ");append_u64_dec(b,sizeof(b),n,regions);append_str(b,sizeof(b),n," readable region(s) [TEMP DISK BACKING]. Run Next Scan to refine.\r\n");flush_buf(b,n);return g_snapshotActive;
-}
-
-static int cmp_numeric(ValueType t,const u8* a,const u8* b){ switch(t){case ValueType::Byte:{u8 x=0,y=0;memcopy(&x,a,1);memcopy(&y,b,1);return x<y?-1:x>y?1:0;}case ValueType::Int16:{i16 x=0,y=0;memcopy(&x,a,2);memcopy(&y,b,2);return x<y?-1:x>y?1:0;}case ValueType::Int32:{i32 x=0,y=0;memcopy(&x,a,4);memcopy(&y,b,4);return x<y?-1:x>y?1:0;}case ValueType::Int64:{i64 x=0,y=0;memcopy(&x,a,8);memcopy(&y,b,8);return x<y?-1:x>y?1:0;}case ValueType::Float:{float x=0,y=0;memcopy(&x,a,4);memcopy(&y,b,4);return x<y?-1:x>y?1:0;}case ValueType::Double:{double x=0,y=0;memcopy(&x,a,8);memcopy(&y,b,8);return x<y?-1:x>y?1:0;}default:return 0;} }
-
-
-static void next_scan_unknown_snapshot(NextMode mode,const char* wantedText,bool hasWanted){
-    HANDLE proc=(HANDLE)g_process;if(!proc||!g_snapshotActive){println("No unknown snapshot is active.");return;}
-    clear_results();
-    const ValueType types[6]={ValueType::Byte,ValueType::Int16,ValueType::Int32,ValueType::Int64,ValueType::Float,ValueType::Double};
-    usize bufferSize=SCAN_CHUNK+8;u8* buffers=(u8*)HeapAlloc(g_heap,0,bufferSize*2);if(!buffers){println("Out of memory.");return;}u8* previous=buffers;u8* current=buffers+bufferSize;
-    usize survivors=0;bool failed=false;
-    for(usize bi=0;bi<g_snapshotCount&&!failed;++bi){
-        SnapshotBlock_& block=g_snapshotBlocks[bi];if(!block.size)continue;
-        if(block.size>bufferSize||!snapshot_read_at(block.fileOffset,previous,block.size)){failed=true;break;}
-        memcopy(current,previous,block.size);SIZE_T got=0;BOOL readOk=ReadProcessMemory(proc,(LPCVOID)block.base,current,block.size,&got);
-        usize available=(usize)got;bool fullEqual=readOk&&available==block.size&&memequal(current,previous,block.size);
-        u8* nextMasks[6]{};usize nextCounts[6]{};u8 nextModes[6]{};bool preserve[6]{};bool evaluate[6]{};
-        for(int ti=0;ti<6;++ti){
-            ValueType t=types[ti];if(g_type!=ValueType::Mixed&&g_type!=t)continue;if(!block.activeCounts[ti])continue;
-            u8 wanted[8]{};bool wantedOk=!hasWanted||encode_value(t,wantedText,wanted);if(hasWanted&&!wantedOk)continue;
-            if(fullEqual&&mode==NextMode::Unchanged){preserve[ti]=true;continue;}
-            if(fullEqual&&(mode==NextMode::Changed||mode==NextMode::Increased||mode==NextMode::Decreased))continue;
-            evaluate[ti]=true;usize mb=snapshot_mask_bytes(block.candidateCounts[ti]);if(mb){nextMasks[ti]=(u8*)HeapAlloc(g_heap,0,mb);if(!nextMasks[ti]){failed=true;break;}memzero(nextMasks[ti],mb);nextModes[ti]=SNAP_MASK_EXPLICIT;}
-        }
-        if(failed){for(int ti=0;ti<6;++ti)if(nextMasks[ti])HeapFree(g_heap,0,nextMasks[ti]);break;}
-        for(int ti=0;ti<6;++ti){
-            if(!evaluate[ti])continue;ValueType t=types[ti];u8 sz=type_size(t);if(available<sz)continue;
-            u8 wanted[8]{};if(hasWanted&&!encode_value(t,wantedText,wanted))continue;
-            usize step=g_alignmentByte?1:sz,start=scan_start_offset(block.base,sz),candidateBytes=block.candidateBytes<available?block.candidateBytes:available;
-            for(usize off=start;off<candidateBytes&&off+sz<=available&&off+sz<=block.size;off+=step){
-                usize index=(off-start)/step;if(!snapshot_mask_test(block,ti,index))continue;
-                const u8* now=current+off;const u8* oldValue=previous+off;bool keep=false;int prevCmp=cmp_numeric(t,now,oldValue);
-                switch(mode){
-                    case NextMode::Exact:keep=hasWanted&&memequal(now,wanted,sz);break;
-                    case NextMode::Changed:keep=!memequal(now,oldValue,sz);break;
-                    case NextMode::Unchanged:keep=memequal(now,oldValue,sz);break;
-                    case NextMode::Increased:keep=prevCmp>0;break;
-                    case NextMode::Decreased:keep=prevCmp<0;break;
-                    case NextMode::Bigger:keep=hasWanted&&cmp_numeric(t,now,wanted)>0;break;
-                    case NextMode::Smaller:keep=hasWanted&&cmp_numeric(t,now,wanted)<0;break;
-                }
-                if(keep){snapshot_mask_set(nextMasks[ti],index);++nextCounts[ti];}
-            }
-        }
-        for(int ti=0;ti<6;++ti){
-            if(preserve[ti]){usize max=(usize)-1;if(block.activeCounts[ti]>max-survivors)survivors=max;else survivors+=block.activeCounts[ti];continue;}
-            if(block.masks[ti]){HeapFree(g_heap,0,block.masks[ti]);block.masks[ti]=nullptr;}
-            block.activeCounts[ti]=nextCounts[ti];
-            if(!nextCounts[ti]){if(nextMasks[ti])HeapFree(g_heap,0,nextMasks[ti]);block.maskModes[ti]=SNAP_MASK_NONE;block.masks[ti]=nullptr;}
-            else if(nextCounts[ti]==block.candidateCounts[ti]){if(nextMasks[ti])HeapFree(g_heap,0,nextMasks[ti]);block.maskModes[ti]=SNAP_MASK_ALL;block.masks[ti]=nullptr;}
-            else{block.maskModes[ti]=nextModes[ti];block.masks[ti]=nextMasks[ti];nextMasks[ti]=nullptr;}
-            usize max=(usize)-1;if(block.activeCounts[ti]>max-survivors)survivors=max;else survivors+=block.activeCounts[ti];
-        }
-        if(!fullEqual&&!snapshot_write_at(block.fileOffset,current,block.size)){failed=true;break;}
-    }
-    if(failed){HeapFree(g_heap,0,buffers);clear_results();clear_snapshot();g_type=ValueType::Invalid;println("Unknown refinement failed (memory or temporary snapshot I/O). Scan state cleared.");return;}
-    refresh_snapshot_type_counts();survivors=g_snapshotCandidates;
-    if(survivors>MAX_RESULTS){
-        char b[380];usize n=0;append_str(b,sizeof(b),n,"Unknown refinement snapshot: ");append_u64_dec(b,sizeof(b),n,survivors);append_str(b,sizeof(b),n," candidate(s) remain. Continue with Next Scan; none were discarded by the 5,000,000 result cap [TEMP DISK BACKING].\r\n");flush_buf(b,n);HeapFree(g_heap,0,buffers);return;
-    }
-    if(survivors&&!reserve_results(survivors)){HeapFree(g_heap,0,buffers);println("Not enough memory to materialize refined results; snapshot was preserved.");return;}
-    bool materializeOk=true;
-    for(usize bi=0;bi<g_snapshotCount&&materializeOk;++bi){
-        SnapshotBlock_& block=g_snapshotBlocks[bi];
-        if(block.size>bufferSize||!snapshot_read_at(block.fileOffset,current,block.size)){materializeOk=false;break;}
-        for(int ti=0;ti<6&&materializeOk;++ti){
-            ValueType t=types[ti];if(g_type!=ValueType::Mixed&&g_type!=t)continue;if(!block.activeCounts[ti])continue;
-            u8 sz=type_size(t);usize step=g_alignmentByte?1:sz,start=scan_start_offset(block.base,sz);
-            if(block.maskModes[ti]==SNAP_MASK_ALL){
-                for(usize index=0;index<block.candidateCounts[ti];++index){usize off=start+index*step;if(off>=block.candidateBytes||off+sz>block.size)break;if(!add_result(block.base+off,current+off,sz,t)){materializeOk=false;break;}}
-            }else if(block.maskModes[ti]==SNAP_MASK_EXPLICIT&&block.masks[ti]){
-                usize mb=snapshot_mask_bytes(block.candidateCounts[ti]);for(usize byteIndex=0;byteIndex<mb&&materializeOk;++byteIndex){u8 bits=block.masks[ti][byteIndex];if(!bits)continue;for(unsigned bit=0;bit<8;++bit){if(!(bits&(u8)(1u<<bit)))continue;usize index=byteIndex*8+bit;if(index>=block.candidateCounts[ti])break;usize off=start+index*step;if(off>=block.candidateBytes||off+sz>block.size)continue;if(!add_result(block.base+off,current+off,sz,t)){materializeOk=false;break;}}}
-            }
-        }
-    }
-    if(!materializeOk){HeapFree(g_heap,0,buffers);clear_results();println("Could not materialize refined results; snapshot was preserved.");return;}
-    HeapFree(g_heap,0,buffers);clear_snapshot();
-    char b[300];usize n=0;append_str(b,sizeof(b),n,"Unknown refinement materialized ");append_u64_dec(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n," result(s) from the complete temporary snapshot.\r\n");flush_buf(b,n);
-}
-
-static void next_scan_text(NextMode mode,const char* wantedText,bool hasWanted){
-    HANDLE proc=(HANDLE)g_process;if(!proc||g_type==ValueType::Invalid){println("Run a scan first.");return;}
-    if(g_snapshotActive){next_scan_unknown_snapshot(mode,wantedText,hasWanted);return;}
-    usize out=0;u8 current[8];u8 wanted[8];memzero(g_resultTypeCounts,sizeof(g_resultTypeCounts));
-    for(usize i=0;i<g_resultCount;++i){
-        ValueType t=g_type==ValueType::Mixed?(ValueType)g_results[i].type:g_type;u8 sz=type_size(t);if(!sz)continue;
-        if(hasWanted&&!encode_value(t,wantedText,wanted))continue;
-        SIZE_T got=0;memzero(current,8);if(!ReadProcessMemory(proc,(LPCVOID)g_results[i].address,current,sz,&got)||got!=sz)continue;
-        bool keep=false;int prevCmp=cmp_numeric(t,current,g_results[i].previous);
-        switch(mode){case NextMode::Exact:keep=hasWanted&&memequal(current,wanted,sz);break;case NextMode::Changed:keep=!memequal(current,g_results[i].previous,sz);break;case NextMode::Unchanged:keep=memequal(current,g_results[i].previous,sz);break;case NextMode::Increased:keep=prevCmp>0;break;case NextMode::Decreased:keep=prevCmp<0;break;case NextMode::Bigger:keep=hasWanted&&cmp_numeric(t,current,wanted)>0;break;case NextMode::Smaller:keep=hasWanted&&cmp_numeric(t,current,wanted)<0;break;}
-        if(keep){if(out!=i)g_results[out]=g_results[i];memcopy(g_results[out].previous,current,sz);g_results[out].type=(u8)t;int ti=value_type_index(t);if(ti>=0)++g_resultTypeCounts[ti];++out;}
-    }
-    g_resultCount=out;if(g_type==ValueType::Mixed)refresh_result_type_counts();g_rankingDirty=true;char b[128];usize n=0;append_str(b,sizeof(b),n,"Next scan: ");append_u64_dec(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n," result(s).\r\n");flush_buf(b,n);
-}
-
-static bool parse_index(const char* s,usize& idx){if(!s)return false;if(*s=='#')++s;u64 v=0;if(!parse_u64(s,v))return false;if(v>=g_resultCount)return false;idx=(usize)v;return true;}
-
-static void cmd_results(const char* countStr){
-    if(g_snapshotActive){println("Unknown snapshot/refinement is active. Keep using Next Scan until candidates are <= 5,000,000; no candidates above that cap are discarded.");return;}
-    usize limit=50;if(countStr){u64 x=0;if(parse_u64(countStr,x))limit=(usize)x;}if(limit>g_resultCount)limit=g_resultCount;HANDLE proc=(HANDLE)g_process;
-    for(usize i=0;i<limit;++i){ValueType t=g_type==ValueType::Mixed?(ValueType)g_results[i].type:g_type;u8 sz=type_size(t);u8 cur[8];memzero(cur,8);SIZE_T got=0;bool ok=proc&&sz&&ReadProcessMemory(proc,(LPCVOID)g_results[i].address,cur,sz,&got)&&got==sz;char b[320];usize n=0;append_char(b,sizeof(b),n,'#');append_u64_dec(b,sizeof(b),n,i);append_str(b,sizeof(b),n,"  ");append_hex(b,sizeof(b),n,g_results[i].address);append_str(b,sizeof(b),n,"  [");append_str(b,sizeof(b),n,type_name(t));append_str(b,sizeof(b),n,"]  ");if(ok)append_value(b,sizeof(b),n,t,cur);else append_str(b,sizeof(b),n,"<unreadable>");append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);}
-    if(g_resultCount>limit){char b[128];usize n=0;append_str(b,sizeof(b),n,"... ");append_u64_dec(b,sizeof(b),n,g_resultCount-limit);append_str(b,sizeof(b),n," more result(s).\r\n");flush_buf(b,n);}
-}
-
-static void cmd_inspect(const char* targetStr){if(!g_process){println("Attach to a process first.");return;}uptr address=0;if(!parse_target_address(targetStr,address)){println("Invalid target. Use #result or address.");return;}u8 raw[8]={};SIZE_T got=0;BOOL ok=ReadProcessMemory((HANDLE)g_process,(LPCVOID)address,raw,8,&got);if((!ok&&got==0)||got==0){print_last_error("Inspect read failed");return;}char b[1024];usize n=0;append_str(b,sizeof(b),n,"Address: ");append_hex(b,sizeof(b),n,address);append_str(b,sizeof(b),n," | bytes read: ");append_u64_dec(b,sizeof(b),n,got);append_str(b,sizeof(b),n,"\r\nRaw: ");static const char* hx="0123456789ABCDEF";for(usize i=0;i<got;++i){append_char(b,sizeof(b),n,hx[(raw[i]>>4)&0xF]);append_char(b,sizeof(b),n,hx[raw[i]&0xF]);if(i+1<got)append_char(b,sizeof(b),n,' ');}append_str(b,sizeof(b),n,"\r\n");
-#define INS_LABEL(x) append_str(b,sizeof(b),n,x);append_str(b,sizeof(b),n," : ")
-if(got>=1){INS_LABEL("uint8  ");append_u64_dec(b,sizeof(b),n,(u64)raw[0]);append_str(b,sizeof(b),n,"\r\n");i8 v=0;memcopy(&v,raw,1);INS_LABEL("int8   ");append_i64_dec(b,sizeof(b),n,(i64)v);append_str(b,sizeof(b),n,"\r\n");}
-if(got>=2){u16 u=0;i16 v=0;memcopy(&u,raw,2);memcopy(&v,raw,2);INS_LABEL("uint16 ");append_u64_dec(b,sizeof(b),n,(u64)u);append_str(b,sizeof(b),n,"\r\n");INS_LABEL("int16  ");append_i64_dec(b,sizeof(b),n,(i64)v);append_str(b,sizeof(b),n,"\r\n");}
-if(got>=4){u32 u=0;i32 v=0;float f=0;memcopy(&u,raw,4);memcopy(&v,raw,4);memcopy(&f,raw,4);INS_LABEL("uint32 ");append_u64_dec(b,sizeof(b),n,(u64)u);append_str(b,sizeof(b),n,"\r\n");INS_LABEL("int32  ");append_i64_dec(b,sizeof(b),n,(i64)v);append_str(b,sizeof(b),n,"\r\n");INS_LABEL("float  ");append_double(b,sizeof(b),n,(double)f);append_str(b,sizeof(b),n,"\r\n");}
-if(got>=8){u64 u=0;i64 v=0;double d=0;memcopy(&u,raw,8);memcopy(&v,raw,8);memcopy(&d,raw,8);INS_LABEL("uint64 ");append_u64_dec(b,sizeof(b),n,u);append_str(b,sizeof(b),n,"\r\n");INS_LABEL("int64  ");append_i64_dec(b,sizeof(b),n,v);append_str(b,sizeof(b),n,"\r\n");INS_LABEL("double ");append_double(b,sizeof(b),n,d);append_str(b,sizeof(b),n,"\r\n");}
-#undef INS_LABEL
-flush_buf(b,n);}
-
-static bool write_address(uptr addr,ValueType t,const char* value){HANDLE proc=(HANDLE)g_process;if(!proc)return false;u8 raw[8];if(!encode_value(t,value,raw))return false;u8 sz=type_size(t);SIZE_T wrote=0;return WriteProcessMemory(proc,(LPVOID)addr,raw,sz,&wrote)&&wrote==sz;}
-static void cmd_read_at(const char* addressStr,const char* typeStr){if(!g_process){println("Attach to a process first.");return;}u64 a=0;if(!parse_u64(addressStr,a)){println("Invalid address.");return;}ValueType t=parse_type(typeStr);if(t==ValueType::Invalid){println("Invalid type.");return;}u8 raw[8]={};u8 sz=type_size(t);SIZE_T got=0;if(!ReadProcessMemory((HANDLE)g_process,(LPCVOID)(uptr)a,raw,sz,&got)||got!=sz){print_last_error("Read failed");return;}char b[260];usize n=0;append_hex(b,sizeof(b),n,(uptr)a);append_str(b,sizeof(b),n," [");append_str(b,sizeof(b),n,type_name(t));append_str(b,sizeof(b),n,"] = ");append_value(b,sizeof(b),n,t,raw);append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);}
-static void cmd_write_at(const char* addressStr,const char* typeStr,const char* value){if(!g_process){println("Attach to a process first.");return;}u64 a=0;if(!parse_u64(addressStr,a)){println("Invalid address.");return;}ValueType t=parse_type(typeStr);if(t==ValueType::Invalid){println("Invalid type.");return;}u8 raw[8];if(!encode_value(t,value,raw)){println("Invalid value for type.");return;}if(!write_address((uptr)a,t,value)){print_last_error("Write failed");return;}println("Typed value written.");}
-static void cmd_freeze_at(const char* addressStr,const char* typeStr,const char* value){if(!g_process){println("Attach to a process first.");return;}u64 a=0;if(!parse_u64(addressStr,a)){println("Invalid address.");return;}ValueType t=parse_type(typeStr);if(t==ValueType::Invalid){println("Invalid type.");return;}u8 raw[8];if(!encode_value(t,value,raw)){println("Invalid value for type.");return;}int slot=-1;for(int i=0;i<MAX_FREEZES;++i)if(!g_freezes[i].active){slot=i;break;}if(slot<0){println("Freeze table full.");return;}FreezeEntry& f=g_freezes[slot];f.address=(uptr)a;f.size=type_size(t);f.type=(u8)t;memzero(f.bytes,8);memcopy(f.bytes,raw,f.size);f.active=1;f.lastWriteOk=write_address(f.address,t,value)?1:0;char b[220];usize n=0;append_str(b,sizeof(b),n,"Freeze #");append_u64_dec(b,sizeof(b),n,(u64)slot);append_str(b,sizeof(b),n," active at ");append_hex(b,sizeof(b),n,f.address);append_str(b,sizeof(b),n," [");append_str(b,sizeof(b),n,type_name(t));append_str(b,sizeof(b),n,"] (10 ms worker).\r\n");flush_buf(b,n);}
-static void cmd_set(const char* idxStr,const char* value){usize idx=0;if(!parse_index(idxStr,idx)){println("Invalid result index.");return;}ValueType t=g_type==ValueType::Mixed?(ValueType)g_results[idx].type:g_type;u8 raw[8];if(!encode_value(t,value,raw)){println("Invalid value for this result type.");return;}if(!write_address(g_results[idx].address,t,value)){print_last_error("Write failed");return;}memcopy(g_results[idx].previous,raw,type_size(t));println("Value written.");}
-
-static DWORD __stdcall freeze_thread(LPVOID){for(;;){HANDLE proc=(HANDLE)g_process;if(proc){for(int i=0;i<MAX_FREEZES;++i){if(g_freezes[i].active){SIZE_T wrote=0;BOOL ok=WriteProcessMemory(proc,(LPVOID)g_freezes[i].address,g_freezes[i].bytes,g_freezes[i].size,&wrote);g_freezes[i].lastWriteOk=(ok&&wrote==g_freezes[i].size)?1:0;}}}Sleep(10);} }
-static void cmd_freeze(const char* idxStr,const char* value){usize idx=0;if(!parse_index(idxStr,idx)){println("Invalid result index.");return;}ValueType t=g_type==ValueType::Mixed?(ValueType)g_results[idx].type:g_type;u8 raw[8];if(!encode_value(t,value,raw)){println("Invalid value for this result type.");return;}int slot=-1;for(int i=0;i<MAX_FREEZES;++i)if(!g_freezes[i].active){slot=i;break;}if(slot<0){println("Freeze table full.");return;}FreezeEntry& f=g_freezes[slot];f.address=g_results[idx].address;f.size=type_size(t);f.type=(u8)t;memzero(f.bytes,8);memcopy(f.bytes,raw,f.size);f.active=1;f.lastWriteOk=write_address(f.address,t,value)?1:0;char b[160];usize n=0;append_str(b,sizeof(b),n,"Freeze #");append_u64_dec(b,sizeof(b),n,(u64)slot);append_str(b,sizeof(b),n," active at ");append_hex(b,sizeof(b),n,f.address);append_str(b,sizeof(b),n," [");append_str(b,sizeof(b),n,type_name(t));append_str(b,sizeof(b),n,"].\r\n");flush_buf(b,n);}
-static void cmd_freezes(){bool any=false;for(int i=0;i<MAX_FREEZES;++i){if(!g_freezes[i].active)continue;any=true;char b[256];usize n=0;append_char(b,sizeof(b),n,'#');append_u64_dec(b,sizeof(b),n,(u64)i);append_str(b,sizeof(b),n,"  ");append_hex(b,sizeof(b),n,g_freezes[i].address);append_str(b,sizeof(b),n,"  ");append_value(b,sizeof(b),n,(ValueType)g_freezes[i].type,g_freezes[i].bytes);append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);}if(!any)println("No active freezes.");}
-static void cmd_unfreeze(const char* s){if(streq(s,"all")){clear_freezes();println("All freezes removed.");return;}u64 x=0;if(!parse_u64(s,x)||x>=MAX_FREEZES){println("Invalid freeze id.");return;}g_freezes[x].active=0;println("Freeze removed.");}
-
-static void show_help(){
-    println("Cheat Wizard v1.7.3 x64 - scanner + scan sessions + AOB + pointer maps");
-    println("  processes | ps");println("  attach <pid>");println("  attach-name <exe-name>");println("  detach");
-    println("  scan <byte|int16|int32|int64|float|double> <value|unknown|unknown-smart>");println("  scan all <value|unknown|unknown-smart>");
-    println("  next <value> | next exact <value>");println("  next changed | unchanged | increased | decreased");println("  next bigger <value> | smaller <value>");
-    println("  results [count] | inspect <#index|address>");println("  read-at <address> <type> | write-at <address> <type> <value>");println("  freeze-at <address> <type> <value> (50 ms)");println("  scan-save <file.cwscan> | scan-load <file.cwscan> [force]");println("  set <#index> <value> | freeze <#index> <value>");println("  freezes | unfreeze <id|all>");
-    println("  modules");println("  aob <byte...> | aob-code <byte...>");println("  aob-module <module> <byte...> | aob-module-code <module> <byte...>");println("  aob-results [count]");
-    println("  aob-resolve <#aob-index|address> <disp_offset> <instruction_size>");println("      CALL/JMP E8/E9: aob-resolve #0 1 5");println("      RIP-relative example: aob-resolve #0 3 7");
-    println("  aob-decode <#aob-index|address>");println("  aob-save <file.cwaob> | aob-load <file.cwaob> | aob-rerun <file.cwaob>");println("  aob-clear");
-    println("  pointer-settings");println("  pointer-settings alignment <natural|byte|2|4|8>");println("  pointer-settings writable <on|off>");println("  pointer-settings private <on|off>");println("  pointer-settings branch <1..65536>");println("  pointer-settings root <any|module-name>");
-    println("  pointer-scan <target> [depth] [max_offset] [max_chains] [max_negative_offset]");println("  pointer-results [count]");println("  pointer-resolve <chain-index>");println("  pointer-rescan <#index|address>");println("  pointer-save <file.cwchain> | pointer-load <file.cwchain>");
-    println("  pmap-capture <file.cwmap> <#index|address> [max_entries]");println("  pmap-load <file.cwmap> | pmap-list");println("  pmap-compare [depth] [max_offset] [max_chains] [max_negative_offset]");println("  pmap-compare-files <file1> <file2> [file3 ...]");println("  pmap-clear | pointer-clear");
-    println("  settings alignment <natural|byte>");println("  version | clear | status | help | quit");
-}
-
-static void cmd_status(){
-    char b[760];usize n=0;append_str(b,sizeof(b),n,"PID: ");append_u64_dec(b,sizeof(b),n,g_pid);
-    append_str(b,sizeof(b),n," | type: ");append_str(b,sizeof(b),n,type_name(g_type));append_str(b,sizeof(b),n," | results: ");append_u64_dec(b,sizeof(b),n,g_resultCount);
-    append_str(b,sizeof(b),n," | AOB: ");append_u64_dec(b,sizeof(b),n,g_aobCount);append_str(b,sizeof(b),n," | pointer width: ");append_u64_dec(b,sizeof(b),n,(u64)g_pointerSize*8);
-    append_str(b,sizeof(b),n," | pointer chains: ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n," | pointer maps: ");append_u64_dec(b,sizeof(b),n,g_pointerMapCount);
-    append_str(b,sizeof(b),n," | value alignment: ");append_str(b,sizeof(b),n,g_alignmentByte?"byte":"natural");
-    append_str(b,sizeof(b),n," | ptr align: ");if(g_pointerAlignment==0)append_str(b,sizeof(b),n,"natural");else append_u64_dec(b,sizeof(b),n,g_pointerAlignment);
-    append_str(b,sizeof(b),n," | ptr branch: ");append_u64_dec(b,sizeof(b),n,g_pointerBranchCap);
-    append_str(b,sizeof(b),n," | ptr root: ");append_str(b,sizeof(b),n,g_pointerRootModule[0]?g_pointerRootModule:"any");
-    append_str(b,sizeof(b),n," | unknown snapshot: ");append_str(b,sizeof(b),n,g_snapshotActive?"active":"none");if(g_snapshotActive){append_str(b,sizeof(b),n," (");append_u64_dec(b,sizeof(b),n,g_snapshotCandidates);append_str(b,sizeof(b),n," candidates, ");append_u64_dec(b,sizeof(b),n,g_snapshotBytes/(1024*1024));append_str(b,sizeof(b),n," MiB temp backing)");}
-    append_str(b,sizeof(b),n,"\r\n");flush_buf(b,n);
-}
-
-
-
-// -----------------------------------------------------------------------------
+static bool write_address(uptr addr,ValueType t,const char* value){if(!g_process||!cw_gui_engine_attached())return false;u8 raw[8]{};if(!encode_value(t,value,raw))return false;u8 sz=type_size(t);u32 winError=0;char engineError[256]{};return cw_gui_engine_write_value((u64)addr,(u8)t,raw,sz,&winError,engineError,sizeof(engineError));}
 // Cheat Wizard native Win32 GUI v1.7.2 - Scanner + Pointer workspace.
 // Custom retained/immediate hybrid UI: no legacy list boxes/combo boxes.
 // Zinc design system, responsive layout, live address watch list, verified
@@ -1399,6 +627,7 @@ static constexpr UINT WM_LBUTTONDBLCLK_ = 0x0203;
 static constexpr UINT WM_MOUSEWHEEL_ = 0x020A;
 static constexpr UINT WM_APP_SCAN_DONE_ = 0x8001;
 static constexpr UINT WM_APP_POINTER_DONE_ = 0x8002;
+static constexpr UINT WM_APP_ENGINE_BUILD_DONE_ = 0x8003;
 static constexpr UINT MB_OK_ = 0x00000000;
 static constexpr UINT MB_ICONERROR_ = 0x00000010;
 static constexpr UINT DT_LEFT_ = 0x00000000;
@@ -1528,6 +757,7 @@ struct UiLayout_ {
     UiRect trainerColorMuted;
     UiRect trainerPreview;
     UiRect footer;
+    UiRect engineBuild;
     UiRect locale;
 };
 static UiLayout_ g_ui{};
@@ -1558,6 +788,10 @@ static HPEN g_penAccent = nullptr;
 static HPEN g_penGreen = nullptr;
 
 static volatile LONG g_uiBusy = 0;
+static bool g_uiEngineReady = false;
+static bool g_uiEngineBuilderAvailable = false;
+static bool g_uiEngineFilePresent = false;
+static char g_uiEngineBuildError[256] = {};
 static constexpr usize UI_RESULT_RENDER_LIMIT = 5000;
 static constexpr usize UI_WATCH_LIMIT = 256;
 static constexpr int UI_WATCH_ROW_H = 38;
@@ -1684,7 +918,19 @@ static const UiLocaleDef_ g_uiLocaleDefs[] = {
     {"header.refresh", "Refresh"},
     {"header.attach", "Attach"},
     {"header.attached", "Attached"},
+    {"engine.build", "Build Engine"},
+    {"engine.building", "Building..."},
+    {"engine.ready", "Engine ready"},
+    {"engine.builderMissing", "Builder missing"},
     {"status.ready", "Ready. Select a process to begin."},
+    {"status.engineNotBuilt", "Local engine is not built. Click Build Engine."},
+    {"status.engineUnavailable", "Local engine could not start. Rebuild it with Build Engine."},
+    {"status.engineBuilderMissing", "cw-engine-builder.exe is missing beside Cheat Wizard."},
+    {"status.engineBuilding", "Building the local engine... This can take about a minute."},
+    {"status.engineBuildDone", "Local engine built and started successfully."},
+    {"status.engineBuildFailed", "Local engine build failed."},
+    {"status.engineBuildThreadFailed", "Could not start the engine build worker."},
+    {"status.closeEngineBuildBusy", "Wait for the local engine build to finish before closing Cheat Wizard."},
     {"status.localeChanged", "Language changed."},
     {"status.localeFallback", "Locale file unavailable or invalid. Compiled English fallback is active."},
     {"status.processEnumFailed", "Could not enumerate processes."},
@@ -2206,7 +1452,7 @@ static void ui_compute_layout(){
     int ty=ey+46;int actionGap=8;int trainerActionW=(rightW-32-actionGap*2)/3;g_ui.trainerShowToggle={rightX+16,ty,trainerActionW,34};g_ui.trainerWriteToggle={rightX+16+trainerActionW+actionGap,ty,trainerActionW,34};g_ui.trainerFreezeToggle={rightX+16+(trainerActionW+actionGap)*2,ty,trainerActionW,34};
     int my=ty+42;int moveW=(rightW-32-actionGap*2)/3;g_ui.trainerMoveUp={rightX+16,my,moveW,34};g_ui.trainerMoveDown={rightX+16+moveW+actionGap,my,moveW,34};g_ui.trainerRemove={rightX+16+(moveW+actionGap)*2,my,moveW,34};
     g_ui.trainerIconButton={tx,bodyY+126,tw,38};g_ui.trainerIconConvert={tx,bodyY+172,tw,38};int colorGap=10,colorW=(tw-colorGap)/2;g_ui.trainerColorBg={tx,bodyY+234,colorW,36};g_ui.trainerColorPanel={tx+colorW+colorGap,bodyY+234,colorW,36};g_ui.trainerColorSurface={tx,bodyY+302,colorW,36};g_ui.trainerColorAccent={tx+colorW+colorGap,bodyY+302,colorW,36};g_ui.trainerColorText={tx,bodyY+370,colorW,36};g_ui.trainerColorMuted={tx+colorW+colorGap,bodyY+370,colorW,36};g_ui.trainerPreview={rightX+16,bodyY+68,rightW-32,bodyH-86};
-    g_ui.footer={m,h-m-footerH,w-2*m,footerH};g_ui.locale={g_ui.footer.x+g_ui.footer.w-94,g_ui.footer.y+3,84,g_ui.footer.h-6};
+    g_ui.footer={m,h-m-footerH,w-2*m,footerH};g_ui.locale={g_ui.footer.x+g_ui.footer.w-94,g_ui.footer.y+3,84,g_ui.footer.h-6};g_ui.engineBuild={g_ui.locale.x-146,g_ui.footer.y+3,138,g_ui.footer.h-6};
 }
 static void ui_sync_edits(){
     // v1.7.2 uses fully custom drawn text fields. There are no child EDIT
@@ -2365,11 +1611,12 @@ static void ui_process_select_delta(int delta){if(!g_uiProcessFilteredCount)retu
 static void ui_process_popup_geometry(UiRect& base,UiRect& search,UiRect& list,UiRect& footerText,UiRect& refresh,UiRect& attach){int width=ui_clampi(g_ui.target.w+170,420,560);int right=g_ui.target.x+g_ui.target.w;int x=ui_clampi(right-width,18,ui_maxi(18,g_ui.w-18-width));int y=g_ui.target.y+g_ui.target.h+8;int rows=ui_clampi(g_uiProcessFilteredCount,1,UI_PROCESS_POPUP_ROWS);int listH=rows*30;search={x+12,y+12,width-24,40};list={x+12,search.y+search.h+8,width-24,listH};int fy=list.y+list.h+8;int buttonW=120;int buttonGap=10;attach={x+width-12-buttonW,fy,buttonW,34};refresh={attach.x-buttonGap-buttonW,fy,buttonW,34};footerText={x+14,fy,ui_maxi(72,refresh.x-x-26),34};base={x,y,width,fy+46-y};}
 static void ui_refresh_processes(){
     DWORD keepPid=(g_uiProcessSelected>=0&&g_uiProcessSelected<g_uiProcessCount)?g_uiProcesses[g_uiProcessSelected].pid:0;
-    g_uiProcessCount=0;g_uiProcessSelected=-1;HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
-    if(snap==(HANDLE)(uptr)-1){ui_set_status(ui_tr("status.processEnumFailed"),3);return;}
-    PROCESSENTRY32A_ e{};e.dwSize=(DWORD)sizeof(e);
-    if(Process32First(snap,&e)){do{if(!e.th32ProcessID||g_uiProcessCount>=(int)UI_PROCESS_LIMIT)continue;UiProcess_& p=g_uiProcesses[g_uiProcessCount++];p.pid=e.th32ProcessID;strcopy(p.name,sizeof(p.name),e.szExeFile);}while(Process32Next(snap,&e));}
-    CloseHandle(snap);
+    g_uiProcessCount=0;g_uiProcessSelected=-1;
+    char engineError[256]{};if(!cw_gui_engine_connected()){if(!cw_gui_engine_exists()){g_uiEngineReady=false;g_uiEngineFilePresent=false;ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineNotBuilt"):ui_tr("status.engineBuilderMissing"),2);return;}if(!cw_gui_engine_start(engineError,sizeof(engineError))){g_uiEngineReady=false;g_uiEngineFilePresent=true;ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineUnavailable"):(engineError[0]?engineError:ui_tr("status.processEnumFailed")),3);return;}g_uiEngineReady=true;g_uiEngineFilePresent=true;}
+    CwGuiProcessInfo* remote=(CwGuiProcessInfo*)HeapAlloc(g_heap,0,UI_PROCESS_LIMIT*sizeof(CwGuiProcessInfo));if(!remote){ui_set_status(ui_tr("status.processEnumFailed"),3);return;}
+    u32 remoteCount=0;if(!cw_gui_engine_list_processes(remote,(u32)UI_PROCESS_LIMIT,&remoteCount,engineError,sizeof(engineError))){HeapFree(g_heap,0,remote);ui_set_status(engineError[0]?engineError:ui_tr("status.processEnumFailed"),3);return;}
+    for(u32 i=0;i<remoteCount&&g_uiProcessCount<(int)UI_PROCESS_LIMIT;++i){if(!remote[i].pid)continue;UiProcess_& p=g_uiProcesses[g_uiProcessCount++];p.pid=(DWORD)remote[i].pid;strcopy(p.name,sizeof(p.name),remote[i].name);}
+    HeapFree(g_heap,0,remote);
     for(int i=1;i<g_uiProcessCount;++i){UiProcess_ key=g_uiProcesses[i];int j=i-1;while(j>=0&&ui_ci_compare(g_uiProcesses[j].name,key.name)>0){g_uiProcesses[j+1]=g_uiProcesses[j];--j;}g_uiProcesses[j+1]=key;}
     for(int i=0;i<g_uiProcessCount;++i)if(g_uiProcesses[i].pid==keepPid){g_uiProcessSelected=i;break;}
     if(g_uiProcessSelected<0&&g_uiProcessCount)g_uiProcessSelected=0;g_uiProcessScroll=0;ui_rebuild_process_filter();
@@ -2377,12 +1624,13 @@ static void ui_refresh_processes(){
 }
 
 static int ui_find_freeze(uptr address){for(int i=0;i<MAX_FREEZES;++i)if(g_freezes[i].active&&g_freezes[i].address==address)return i;return -1;}
-static void ui_remove_freeze(uptr address){for(int i=0;i<MAX_FREEZES;++i)if(g_freezes[i].active&&g_freezes[i].address==address){g_freezes[i].active=0;g_freezes[i].lastWriteOk=0;}}
-static bool ui_read_value(uptr address,ValueType t,u8 out[8]){memzero(out,8);u8 sz=type_size(t);SIZE_T got=0;return g_process&&sz&&ReadProcessMemory((HANDLE)g_process,(LPCVOID)address,out,sz,&got)&&got==sz;}
+static void ui_remove_freeze(uptr address){for(int i=0;i<MAX_FREEZES;++i)if(g_freezes[i].active&&g_freezes[i].address==address){char engineError[256]{};if(g_freezeIds[i])cw_gui_engine_freeze_remove(g_freezeIds[i],engineError,sizeof(engineError));g_freezeIds[i]=0;g_freezes[i].active=0;g_freezes[i].lastWriteOk=0;}}
+static bool ui_read_value(uptr address,ValueType t,u8 out[8]){memzero(out,8);if(g_uiBusy||!g_process||!cw_gui_engine_attached())return false;u8 got=0;char engineError[256]{};return cw_gui_engine_read_value((u64)address,(u8)t,out,&got,engineError,sizeof(engineError))&&got==type_size(t);}
 static bool ui_freeze_value(uptr address,ValueType t,const char* text){
     u8 raw[8]{};if(!encode_value(t,text,raw))return false;int slot=ui_find_freeze(address);if(slot<0){for(int i=0;i<MAX_FREEZES;++i)if(!g_freezes[i].active){slot=i;break;}}
-    if(slot<0)return false;FreezeEntry& f=g_freezes[slot];f.active=0;f.lastWriteOk=0;f.address=address;f.size=type_size(t);f.type=(u8)t;memzero(f.bytes,8);memcopy(f.bytes,raw,f.size);
-    if(!write_address(address,t,text))return false;f.lastWriteOk=1;f.active=1;return true;
+    if(slot<0)return false;if(g_freezes[slot].active&&g_freezeIds[slot]){char removeError[256]{};cw_gui_engine_freeze_remove(g_freezeIds[slot],removeError,sizeof(removeError));g_freezeIds[slot]=0;}
+    FreezeEntry& f=g_freezes[slot];f.active=0;f.lastWriteOk=0;f.address=address;f.size=type_size(t);f.type=(u8)t;memzero(f.bytes,8);memcopy(f.bytes,raw,f.size);
+    if(!write_address(address,t,text))return false;u64 freezeId=0;char engineError[256]{};if(!cw_gui_engine_freeze_add((u64)address,(u8)t,raw,f.size,10,&freezeId,engineError,sizeof(engineError)))return false;g_freezeIds[slot]=freezeId;f.lastWriteOk=1;f.active=1;return true;
 }
 static int ui_find_watch(uptr address,ValueType t){for(int i=0;i<(int)UI_WATCH_LIMIT;++i)if(g_uiWatches[i].active&&g_uiWatches[i].address==address&&g_uiWatches[i].type==(u8)t)return i;return -1;}
 static int ui_watch_slot_for_row(int logicalRow){int row=0;for(int i=0;i<(int)UI_WATCH_LIMIT;++i)if(g_uiWatches[i].active){if(row==logicalRow)return i;++row;}return -1;}
@@ -2408,11 +1656,10 @@ static void ui_rename_selected_watch(){if(g_uiSelectedWatch<0||g_uiSelectedWatch
 static void ui_finish_watch_inline_edit(bool commitName=true){if(g_uiTextFocus==UI_TEXT_WATCH_NAME&&commitName){ui_rename_selected_watch();return;}if(g_uiTextFocus==UI_TEXT_WATCH_NAME||g_uiTextFocus==UI_TEXT_WATCH){g_uiTextFocus=UI_TEXT_NONE;g_uiTextCursor=g_uiTextAnchor=0;}}
 static void ui_write_selected_watch(){
     if(g_uiSelectedWatch<0||!g_uiWatches[g_uiSelectedWatch].active){ui_set_status(ui_tr("status.selectAddress"),2);return;}UiWatch_& w=g_uiWatches[g_uiSelectedWatch];ValueType t=(ValueType)w.type;char text[128]{};strcopy(text,sizeof(text),g_uiWatchText);u8 desired[8]{};
-    if(!encode_value(t,text,desired)){ui_set_status(ui_tr("status.invalidAddressValue"),3);return;}int fi=ui_find_freeze(w.address);u8 sz=type_size(t);
-    if(fi>=0){FreezeEntry& f=g_freezes[fi];f.active=0;f.address=w.address;f.size=sz;f.type=(u8)t;memzero(f.bytes,8);memcopy(f.bytes,desired,sz);f.lastWriteOk=0;}
-    if(!write_address(w.address,t,text)){if(fi>=0)g_freezes[fi].active=1;ui_set_status(ui_tr("status.writeFailed"),3);return;}
-    if(fi>=0){g_freezes[fi].lastWriteOk=1;g_freezes[fi].active=1;}
-    u8 after[8]{};bool reread=ui_read_value(w.address,t,after);bool verified=reread&&memequal(after,desired,sz);if(reread){usize n=0;append_value(g_uiWatchText,sizeof(g_uiWatchText),n,t,after);g_uiWatchText[n]=0;}g_uiTextFocus=UI_TEXT_NONE;g_uiTextCursor=g_uiTextAnchor=0;ui_set_status(verified?(fi>=0?ui_tr("status.writeConfirmedFreeze"):ui_tr("status.writeConfirmed")):ui_tr("status.writeOverwritten"),verified?1:2);InvalidateRect(g_hwnd,nullptr,0);
+    if(!encode_value(t,text,desired)){ui_set_status(ui_tr("status.invalidAddressValue"),3);return;}bool wasFrozen=ui_find_freeze(w.address)>=0;u8 sz=type_size(t);if(wasFrozen)ui_remove_freeze(w.address);
+    if(!write_address(w.address,t,text)){if(wasFrozen)ui_freeze_value(w.address,t,text);ui_set_status(ui_tr("status.writeFailed"),3);return;}
+    if(wasFrozen&&!ui_freeze_value(w.address,t,text)){ui_set_status(ui_tr("status.freezeEnableFailed"),3);return;}
+    u8 after[8]{};bool reread=ui_read_value(w.address,t,after);bool verified=reread&&memequal(after,desired,sz);if(reread){usize n=0;append_value(g_uiWatchText,sizeof(g_uiWatchText),n,t,after);g_uiWatchText[n]=0;}g_uiTextFocus=UI_TEXT_NONE;g_uiTextCursor=g_uiTextAnchor=0;ui_set_status(verified?(wasFrozen?ui_tr("status.writeConfirmedFreeze"):ui_tr("status.writeConfirmed")):ui_tr("status.writeOverwritten"),verified?1:2);InvalidateRect(g_hwnd,nullptr,0);
 }
 static void ui_toggle_selected_freeze(bool preferCurrentIfEmpty=false){
     if(g_uiSelectedWatch<0||!g_uiWatches[g_uiSelectedWatch].active){ui_set_status(ui_tr("status.selectAddress"),2);return;}UiWatch_& w=g_uiWatches[g_uiSelectedWatch];ValueType t=(ValueType)w.type;int fi=ui_find_freeze(w.address);
@@ -2421,16 +1668,55 @@ static void ui_toggle_selected_freeze(bool preferCurrentIfEmpty=false){
     if(!text[0]){ui_set_status(ui_tr("status.freezeValueRequired"),2);return;}if(!ui_freeze_value(w.address,t,text)){ui_set_status(ui_tr("status.freezeEnableFailed"),3);return;}ui_set_status(ui_tr("status.freezeActive"),1);InvalidateRect(g_hwnd,nullptr,0);
 }
 
+static bool ui_sync_scan_from_engine(const CwGuiScanSummary& summary){
+    clear_results();clear_snapshot();
+    g_type=summary.mixed?ValueType::Mixed:(summary.primaryType<=5?(ValueType)summary.primaryType:ValueType::Invalid);
+    g_snapshotActive=summary.snapshotActive!=0;
+    g_snapshotCandidates=(usize)summary.candidateCount;
+    g_snapshotBytes=(usize)summary.bytesRead;
+    memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));
+    memzero(g_resultTypeCounts,sizeof(g_resultTypeCounts));
+    for(int i=0;i<6;++i){
+        usize count=(usize)summary.typeCounts[i];
+        if(g_snapshotActive)g_snapshotTypeCounts[i]=count;else g_resultTypeCounts[i]=count;
+    }
+    g_rankingDirty=true;
+    if(g_snapshotActive)return g_type!=ValueType::Invalid;
+    if(summary.resultCount>MAX_RESULTS)return false;
+    if(summary.resultCount&&!reserve_results((usize)summary.resultCount))return false;
+
+    constexpr u32 pageCapacity=256;
+    CwGuiScanResult page[pageCapacity]{};
+    u64 offset=0,total=0;
+    while(offset<summary.resultCount){
+        u32 count=0;char engineError[256]{};
+        if(!cw_gui_engine_scan_results(offset,page,pageCapacity,&count,&total,engineError,sizeof(engineError)))return false;
+        if(!count)break;
+        for(u32 i=0;i<count&&g_resultCount<MAX_RESULTS;++i){
+            CwGuiScanResult& src=page[i];Result& dst=g_results[g_resultCount++];
+            dst.address=(uptr)src.address;dst.type=src.type;memzero(dst.previous,8);
+            if(src.previousPresent){u8 sz=type_size((ValueType)src.type);if(sz)memcopy(dst.previous,src.previous,sz);}
+        }
+        offset+=count;
+    }
+    if(total!=summary.resultCount||g_resultCount!=(usize)summary.resultCount)return false;
+    refresh_result_type_counts();
+    return g_type!=ValueType::Invalid||g_resultCount==0;
+}
+
 static DWORD __stdcall ui_scan_worker(LPVOID){
-    bool ok=true;
+    bool ok=true;CwGuiScanSummary summary{};char engineError[256]{};
     if(g_uiTask.kind==1){
         guided_reset();
-        if(g_uiTask.scanType==0){if(g_uiTask.type==ValueType::Mixed)ok=scan_all_exact(g_uiTask.value);else{u8 raw[8]{};ok=encode_value(g_uiTask.type,g_uiTask.value,raw)&&scan_exact(g_uiTask.type,raw);}}
-        else if(g_uiTask.scanType==1||g_uiTask.scanType==8){bool smart=g_uiTask.scanType==8;ok=g_uiTask.type==ValueType::Mixed?scan_all_unknown(smart):scan_unknown(g_uiTask.type,smart);}else ok=false;
+        CwGuiScanOptions options{};options.alignmentByte=g_alignmentByte?1:0;options.minAddress=0;options.maxAddress=~(u64)0;options.floatTolerance=0.00001;
+        u8 kind=g_uiTask.scanType==0?0:(g_uiTask.scanType==1?1:(g_uiTask.scanType==8?2:255));
+        if(kind==255)ok=false;
+        else ok=cw_gui_engine_scan_first(kind,(u8)g_uiTask.type,g_uiTask.value,&options,&summary,engineError,sizeof(engineError));
+        if(ok)ok=ui_sync_scan_from_engine(summary);
     }else if(g_uiTask.kind==2){
         NextMode mode=NextMode::Exact;bool has=false;switch(g_uiTask.scanType){case 0:mode=NextMode::Exact;has=true;break;case 2:mode=NextMode::Changed;break;case 3:mode=NextMode::Unchanged;break;case 4:mode=NextMode::Increased;break;case 5:mode=NextMode::Decreased;break;case 6:mode=NextMode::Bigger;has=true;break;case 7:mode=NextMode::Smaller;has=true;break;default:ok=false;break;}
-        if(ok){usize before=guided_current_count();usize beforeTypes[6]{};guided_current_types(beforeTypes);next_scan_text(mode,has?g_uiTask.value:nullptr,has);guided_record(mode,before,beforeTypes);}
-    }
+        if(ok){usize before=guided_current_count();usize beforeTypes[6]{};guided_current_types(beforeTypes);ok=cw_gui_engine_scan_next((u8)mode,has?g_uiTask.value:"",&summary,engineError,sizeof(engineError));if(ok)ok=ui_sync_scan_from_engine(summary);if(ok)guided_record(mode,before,beforeTypes);}
+    }else ok=false;
     if(ok&&g_rankingEnabled&&!g_snapshotActive&&g_rankingDirty)rebuild_result_ranking();
     PostMessageA(g_hwnd,WM_APP_SCAN_DONE_,ok?1:0,0);return 0;
 }
@@ -2442,7 +1728,7 @@ static void ui_start_scan(bool first){
     DWORD tid=0;HANDLE th=CreateThread(nullptr,0,ui_scan_worker,nullptr,0,&tid);if(!th){g_uiBusy=0;if(first){g_uiUnknownFlow=false;g_uiUnknownInitialMode=0;g_uiScanType=0;}ui_sync_edits();ui_set_status(ui_tr("status.scanThreadFailed"),3);}else CloseHandle(th);
 }
 static void ui_start_guided(int scanType){if(g_uiBusy)return;if(!g_process||g_type==ValueType::Invalid||!g_uiUnknownFlow){ui_set_status(ui_tr("status.guidedUnavailable"),2);return;}if(scanType<2||scanType>5)return;g_uiTask.kind=2;g_uiTask.scanType=scanType;g_uiTask.type=g_type;g_uiTask.value[0]=0;g_uiBusy=1;g_uiPopup=UI_POP_NONE;ui_sync_edits();const char* label=scanType==2?ui_tr("guided.changed"):(scanType==3?ui_tr("guided.unchanged"):(scanType==4?ui_tr("guided.increased"):ui_tr("guided.decreased")));char b[180]{};usize n=0;append_str(b,sizeof(b),n,ui_tr("status.guidedPrefix"));append_str(b,sizeof(b),n,label);append_str(b,sizeof(b),n,ui_tr("status.guidedRefining"));b[n]=0;ui_set_status(b,0);InvalidateRect(g_hwnd,nullptr,0);DWORD tid=0;HANDLE th=CreateThread(nullptr,0,ui_scan_worker,nullptr,0,&tid);if(!th){g_uiBusy=0;ui_sync_edits();ui_set_status(ui_tr("status.guidedThreadFailed"),3);}else CloseHandle(th);}
-static void ui_new_scan(){if(g_uiBusy)return;clear_results();clear_snapshot();guided_reset();g_type=ValueType::Invalid;g_uiUnknownFlow=false;g_uiUnknownInitialMode=0;g_uiScanType=0;g_uiSelectedResult=-1;g_uiResultScroll=0;ui_set_status(ui_tr("status.newScan"),0);InvalidateRect(g_hwnd,nullptr,0);}
+static void ui_new_scan(){if(g_uiBusy)return;char engineError[256]{};cw_gui_engine_scan_clear(engineError,sizeof(engineError));clear_results();clear_snapshot();guided_reset();g_type=ValueType::Invalid;g_uiUnknownFlow=false;g_uiUnknownInitialMode=0;g_uiScanType=0;g_uiSelectedResult=-1;g_uiResultScroll=0;ui_set_status(ui_tr("status.newScan"),0);InvalidateRect(g_hwnd,nullptr,0);}
 static void ui_attach_selected(){
     if(g_uiBusy)return;if(g_uiProcessSelected<0||g_uiProcessSelected>=g_uiProcessCount){ui_set_status(ui_tr("status.selectProcess"),2);return;}UiProcess_ p=g_uiProcesses[g_uiProcessSelected];ui_clear_watches(true,false);
     if(!attach_pid(p.pid)){char b[180];usize n=0;append_str(b,sizeof(b),n,ui_tr("status.openProcessFailed"));append_u64_dec(b,sizeof(b),n,GetLastError());b[n]=0;ui_set_status(b,3);return;}g_uiUnknownFlow=false;g_uiUnknownInitialMode=0;g_uiScanType=0;strcopy(g_uiAttachedName,sizeof(g_uiAttachedName),p.name);if(!g_uiTrainerCount&&!g_uiTrainerProcess[0])strcopy(g_uiTrainerProcess,sizeof(g_uiTrainerProcess),p.name);refresh_modules();g_uiSelectedResult=-1;g_uiResultScroll=0;g_uiPointerTargetValid=false;g_uiSelectedPointer=-1;g_uiPointerScroll=0;ui_pointer_reset_cache();
@@ -2456,6 +1742,8 @@ static HBRUSH g_brushError = nullptr;
 static HBRUSH g_brushAccentSoft = nullptr;
 
 static bool ui_selected_is_attached(){return g_process&&g_uiProcessSelected>=0&&g_uiProcessSelected<g_uiProcessCount&&g_uiProcesses[g_uiProcessSelected].pid==g_pid;}
+static DWORD __stdcall ui_engine_build_worker(LPVOID){char engineError[256]{};bool ok=cw_gui_engine_build(engineError,sizeof(engineError));strcopy(g_uiEngineBuildError,sizeof(g_uiEngineBuildError),engineError);PostMessageA(g_hwnd,WM_APP_ENGINE_BUILD_DONE_,ok?1:0,0);return 0;}
+static void ui_start_engine_build(){if(g_uiBusy)return;if(!g_uiEngineBuilderAvailable){ui_set_status(ui_tr("status.engineBuilderMissing"),3);return;}g_uiBusy=3;g_uiEngineBuildError[0]=0;g_uiPopup=UI_POP_NONE;ui_set_status(ui_tr("status.engineBuilding"),0);InvalidateRect(g_hwnd,nullptr,0);DWORD tid=0;HANDLE th=CreateThread(nullptr,0,ui_engine_build_worker,nullptr,0,&tid);if(!th){g_uiBusy=0;ui_set_status(ui_tr("status.engineBuildThreadFailed"),3);}else CloseHandle(th);}
 static void ui_tab(HDC dc,const UiRect& r,const char* label,bool active,bool enabled){
     HBRUSH br=active?g_brushSelected:(ui_hover(r)&&enabled?g_brushHover:g_brushPanel);ui_round(dc,r,br,active?g_penAccent:g_penBorder,8);ui_text(dc,label,r,enabled?(active?Z50:Z300):Z600,g_fontBold,DT_CENTER_|DT_VCENTER_|DT_SINGLELINE_);
 }
@@ -2551,49 +1839,26 @@ static void ui_pointer_apply_preset(u64& depth,u64& maxOffset,u64& maxNegative,u
     else{depth=4;maxOffset=0x1000;maxNegative=0;maxChains=10000;branch=768;indexLimit=5000000;alignment=0;searchBudget=1250000;writableOnly=true;}
 }
 static void ui_pointer_reset_cache(){memzero(g_uiPointerResolvedCache,sizeof(g_uiPointerResolvedCache));memzero(g_uiPointerResolveState,sizeof(g_uiPointerResolveState));memzero(g_uiPointerValueCache,sizeof(g_uiPointerValueCache));memzero(g_uiPointerValueState,sizeof(g_uiPointerValueState));}
+static bool ui_sync_pointer_chains_from_engine(){
+    clear_pointer_chains();ui_pointer_reset_cache();constexpr u32 pageCapacity=128;CwGuiPointerChain page[pageCapacity]{};u64 offset=0,total=0;u32 pointerSize=0,chainPointerSize=0;
+    for(;;){u32 count=0;char engineError[256]{};if(!cw_gui_engine_pointer_chains(offset,page,pageCapacity,&count,&total,&pointerSize,&chainPointerSize,engineError,sizeof(engineError)))return false;if(offset==0){if(total>MAX_POINTER_CHAINS||!reserve_pointer_chains((usize)total))return false;g_pointerSize=(u8)pointerSize;g_chainPointerSize=(u8)chainPointerSize;}for(u32 i=0;i<count&&g_pointerChainCount<MAX_POINTER_CHAINS;++i){CwGuiPointerChain& src=page[i];if(!src.module[0]||!src.depth||src.depth>MAX_POINTER_DEPTH)return false;PointerChain_& dst=g_pointerChains[g_pointerChainCount];memzero(&dst,sizeof(dst));strcopy(dst.module,sizeof(dst.module),src.module);dst.rootOffset=(uptr)src.rootOffset;dst.depth=src.depth;for(u8 j=0;j<dst.depth;++j)dst.offsets[j]=(i64)src.offsets[j];if(src.resolved){g_uiPointerResolvedCache[g_pointerChainCount]=(uptr)src.resolvedAddress;g_uiPointerResolveState[g_pointerChainCount]=2;}else g_uiPointerResolveState[g_pointerChainCount]=1;++g_pointerChainCount;}offset+=count;if(!count||offset>=total)break;}
+    return g_pointerChainCount==(usize)total;
+}
+static bool ui_push_pointer_chains_to_engine(){if(!g_process||!g_pointerChainCount||(g_chainPointerSize!=4&&g_chainPointerSize!=8))return false;CwGuiPointerChain* remote=(CwGuiPointerChain*)HeapAlloc(g_heap,0,g_pointerChainCount*sizeof(CwGuiPointerChain));if(!remote)return false;for(usize i=0;i<g_pointerChainCount;++i){memzero(&remote[i],sizeof(CwGuiPointerChain));strcopy(remote[i].module,sizeof(remote[i].module),g_pointerChains[i].module);remote[i].rootOffset=(u64)g_pointerChains[i].rootOffset;remote[i].depth=g_pointerChains[i].depth;for(u8 j=0;j<g_pointerChains[i].depth&&j<8;++j)remote[i].offsets[j]=g_pointerChains[i].offsets[j];}char engineError[256]{};bool ok=cw_gui_engine_pointer_set_chains(remote,(u32)g_pointerChainCount,(u32)g_chainPointerSize,engineError,sizeof(engineError));HeapFree(g_heap,0,remote);if(ok)ok=ui_sync_pointer_chains_from_engine();return ok;}
 static void ui_pointer_refresh_visible_cache(){
-    if(g_uiBusy||!g_process||!g_pointerChainCount||g_chainPointerSize!=g_pointerSize)return;if(!g_moduleCount&&!refresh_modules())return;int visible=ui_maxi(1,(g_ui.pointerTable.h-34)/32);int start=g_uiPointerScroll;int end=ui_mini((int)g_pointerChainCount,start+visible);ValueType t=(ValueType)g_uiPointerTargetType;for(int i=start;i<end;++i){uptr addr=0;if(resolve_pointer_chain(g_pointerChains[i],addr)){g_uiPointerResolvedCache[i]=addr;g_uiPointerResolveState[i]=2;u8 raw[8]{};if(t!=ValueType::Invalid&&t!=ValueType::Mixed&&ui_read_value(addr,t,raw)){memcopy(g_uiPointerValueCache[i],raw,type_size(t));g_uiPointerValueState[i]=2;}else g_uiPointerValueState[i]=1;}else{g_uiPointerResolvedCache[i]=0;g_uiPointerResolveState[i]=1;g_uiPointerValueState[i]=1;}}
+    if(g_uiBusy||!g_process||!g_pointerChainCount||g_chainPointerSize!=g_pointerSize)return;int visible=ui_maxi(1,(g_ui.pointerTable.h-34)/32);int start=g_uiPointerScroll;int end=ui_mini((int)g_pointerChainCount,start+visible);ValueType t=(ValueType)g_uiPointerTargetType;for(int i=start;i<end;++i){uptr addr=0;if(g_uiPointerResolveState[i]==2)addr=g_uiPointerResolvedCache[i];else{u64 remoteAddress=0;char engineError[256]{};if(cw_gui_engine_pointer_resolve((u64)i,&remoteAddress,engineError,sizeof(engineError))){addr=(uptr)remoteAddress;g_uiPointerResolvedCache[i]=addr;g_uiPointerResolveState[i]=2;}else g_uiPointerResolveState[i]=1;}if(g_uiPointerResolveState[i]==2){u8 raw[8]{};if(t!=ValueType::Invalid&&t!=ValueType::Mixed&&ui_read_value(addr,t,raw)){memcopy(g_uiPointerValueCache[i],raw,type_size(t));g_uiPointerValueState[i]=2;}else g_uiPointerValueState[i]=1;}else{g_uiPointerResolvedCache[i]=0;g_uiPointerValueState[i]=1;}}
 }
 static DWORD __stdcall ui_pointer_worker(LPVOID){
     bool ok=true;bool cancelled=false;g_pointerCancelRequested=0;g_uiPointerIndexed=0;g_uiPointerBefore=g_pointerChainCount;g_uiPointerLevel1Candidates=0;g_uiPointerIndexTruncated=false;g_uiPointerAutoRootFallback=false;g_uiPointerSearchTruncated=false;g_uiPointerSearchBudgetHit=false;g_uiPointerTargetedUsed=false;g_pointerSearchSteps=0;g_pointerSearchBudgetHit=0;g_pointerLayerSlots=0;g_pointerLayerMatches=0;g_pointerLayerFrontier=0;g_pointerLayerDepth=0;g_pointerLayerMaxDepth=0;g_pointerLayerTruncated=0;g_uiPointerPhase=(g_uiTask.kind==4)?4:1;
-    if(!g_process)ok=false;if(ok&&!refresh_modules())ok=false;
-    if(ok){BOOL wow=0;if(IsWow64Process((HANDLE)g_process,&wow))g_pointerSize=wow?4:8;g_pointerAlignment=(usize)g_uiTask.pointerAlignment;g_pointerWritableOnly=g_uiTask.pointerWritableOnly;g_pointerPrivateOnly=false;g_pointerBranchCap=(usize)g_uiTask.pointerBranch;g_pointerIndexLimit=(usize)g_uiTask.pointerIndexLimit;g_pointerSearchBudget=g_uiTask.pointerSearchBudget;if(g_uiTask.pointerRootAny)g_pointerRootModule[0]=0;else strcopy(g_pointerRootModule,sizeof(g_pointerRootModule),g_uiAttachedName);}
+    if(!g_process||!cw_gui_engine_attached())ok=false;
+    if(ok){g_pointerAlignment=(usize)g_uiTask.pointerAlignment;g_pointerWritableOnly=g_uiTask.pointerWritableOnly;g_pointerPrivateOnly=false;g_pointerBranchCap=(usize)g_uiTask.pointerBranch;g_pointerIndexLimit=(usize)g_uiTask.pointerIndexLimit;g_pointerSearchBudget=g_uiTask.pointerSearchBudget;if(g_uiTask.pointerRootAny)g_pointerRootModule[0]=0;else strcopy(g_pointerRootModule,sizeof(g_pointerRootModule),g_uiAttachedName);}
     if(ok&&g_uiTask.kind==3){
-        clear_pointer_chains();g_chainPointerSize=g_pointerSize;
-        if(g_uiPointerPreset==2){
-            // Deep mode is index-free: breadth-first targeted reverse scans avoid
-            // losing useful pointers simply because a huge managed heap exceeded
-            // an arbitrary global index cap.
-            g_uiPointerTargetedUsed=true;g_uiPointerIndexed=0;g_uiPointerIndexTruncated=false;g_uiPointerLevel1Candidates=0;
-            usize parentCap=(usize)g_uiTask.pointerBranch;g_uiPointerPhase=5;ok=pointer_layered_search(g_uiTask.pointerTarget,(u8)g_uiTask.pointerDepth,(uptr)g_uiTask.pointerMaxOffset,(uptr)g_uiTask.pointerMaxNegative,(usize)g_uiTask.pointerMaxChains,(usize)g_uiTask.pointerAlignment,parentCap);
-            if(ok&&!g_pointerCancelRequested&&!g_pointerChainCount&&!g_uiTask.pointerRootAny&&g_pointerRootModule[0]){g_pointerRootModule[0]=0;g_uiPointerAutoRootFallback=true;g_uiPointerPhase=6;ok=pointer_layered_search(g_uiTask.pointerTarget,(u8)g_uiTask.pointerDepth,(uptr)g_uiTask.pointerMaxOffset,(uptr)g_uiTask.pointerMaxNegative,(usize)g_uiTask.pointerMaxChains,(usize)g_uiTask.pointerAlignment,parentCap);}
-            g_uiPointerSearchTruncated=(g_pointerLayerTruncated!=0)||g_pointerChainsTruncated;if(g_pointerCancelRequested)cancelled=true;
-        }else{
-            g_pointerIndexLimit=(usize)g_uiTask.pointerIndexLimit;bool indexed=build_pointer_index();if(g_pointerCancelRequested){cancelled=true;}else if(!indexed)ok=false;
-            if(ok&&!cancelled){
-                g_uiPointerIndexed=g_pointerCount;g_uiPointerIndexTruncated=g_pointerIndexTruncated;g_uiPointerLevel1Candidates=pointer_near_target_count(g_uiTask.pointerTarget,(uptr)g_uiTask.pointerMaxOffset,(uptr)g_uiTask.pointerMaxNegative);
-                g_uiPointerPhase=2;g_pointerSearchSteps=0;g_pointerSearchBudgetHit=0;
-                i64 rev[MAX_POINTER_DEPTH]={};uptr path[MAX_POINTER_DEPTH+1]={};path[0]=g_uiTask.pointerTarget;pointer_dfs(g_uiTask.pointerTarget,(u8)g_uiTask.pointerDepth,(uptr)g_uiTask.pointerMaxOffset,(uptr)g_uiTask.pointerMaxNegative,(usize)g_uiTask.pointerMaxChains,rev,0,path,1);
-                g_uiPointerSearchBudgetHit=g_pointerSearchBudgetHit!=0;g_uiPointerSearchTruncated=g_pointerChainsTruncated||g_uiPointerSearchBudgetHit;
-                if(!g_pointerCancelRequested&&!g_pointerSearchBudgetHit&&g_pointerChainCount==0&&!g_uiTask.pointerRootAny){
-                    g_pointerRootModule[0]=0;g_uiPointerAutoRootFallback=true;g_pointerChainsTruncated=false;g_pointerSearchSteps=0;g_pointerSearchBudgetHit=0;g_uiPointerPhase=3;
-                    pointer_dfs(g_uiTask.pointerTarget,(u8)g_uiTask.pointerDepth,(uptr)g_uiTask.pointerMaxOffset,(uptr)g_uiTask.pointerMaxNegative,(usize)g_uiTask.pointerMaxChains,rev,0,path,1);
-                    g_uiPointerSearchBudgetHit=g_uiPointerSearchBudgetHit||(g_pointerSearchBudgetHit!=0);g_uiPointerSearchTruncated=g_uiPointerSearchTruncated||g_pointerChainsTruncated||(g_pointerSearchBudgetHit!=0);
-                }
-                // Incomplete monolithic indexes are not treated as a final answer.
-                // Fall back to a targeted layered scan that never needs an 8M index.
-                if(!g_pointerCancelRequested&&g_pointerChainCount==0&&(g_pointerIndexTruncated||g_uiPointerSearchBudgetHit)){
-                    g_uiPointerTargetedUsed=true;g_pointerRootModule[0]=0;g_uiPointerAutoRootFallback=true;clear_pointer_index();g_uiPointerPhase=5;g_pointerChainsTruncated=false;g_pointerSearchBudgetHit=0;
-                    usize targetedAlign=(usize)g_pointerSize;usize parentCap=(usize)g_uiTask.pointerBranch;ok=pointer_layered_search(g_uiTask.pointerTarget,(u8)g_uiTask.pointerDepth,(uptr)g_uiTask.pointerMaxOffset,(uptr)g_uiTask.pointerMaxNegative,(usize)g_uiTask.pointerMaxChains,targetedAlign,parentCap);
-                    g_uiPointerSearchTruncated=g_uiPointerSearchTruncated||(g_pointerLayerTruncated!=0)||g_pointerChainsTruncated;
-                }
-                if(g_pointerCancelRequested)cancelled=true;
-            }
-        }
-        clear_pointer_index();if(cancelled)clear_pointer_chains();
+        CwGuiPointerOptions options{};options.maxDepth=(u16)g_uiTask.pointerDepth;options.alignment=(u16)g_uiTask.pointerAlignment;options.maxChains=(u32)g_uiTask.pointerMaxChains;options.maxIndexEntries=(u32)g_uiTask.pointerIndexLimit;options.maxCandidatesPerNode=(u32)g_uiTask.pointerBranch;options.maxSearchCandidates=(u32)g_uiTask.pointerSearchBudget;options.maxOffset=g_uiTask.pointerMaxOffset;options.maxNegativeOffset=g_uiTask.pointerMaxNegative;options.writableOnly=g_uiTask.pointerWritableOnly?1:0;options.privateOnly=0;if(!g_uiTask.pointerRootAny)strcopy(options.rootModule,sizeof(options.rootModule),g_uiAttachedName);
+        CwGuiPointerStats stats{};char engineError[256]{};ok=cw_gui_engine_pointer_scan((u64)g_uiTask.pointerTarget,&options,&stats,engineError,sizeof(engineError));if(ok&&!stats.chains&&!g_uiTask.pointerRootAny){options.rootModule[0]=0;g_uiPointerAutoRootFallback=true;ok=cw_gui_engine_pointer_scan((u64)g_uiTask.pointerTarget,&options,&stats,engineError,sizeof(engineError));}
+        if(ok){g_pointerSize=(u8)stats.pointerSize;g_uiPointerIndexed=(usize)stats.indexEntries;g_uiPointerIndexTruncated=stats.indexTruncated!=0;g_uiPointerSearchTruncated=stats.chainsTruncated!=0;g_pointerChainsTruncated=stats.chainsTruncated!=0;cancelled=stats.cancelled!=0;ok=!cancelled&&ui_sync_pointer_chains_from_engine();}
     }else if(ok&&g_uiTask.kind==4){
-        if(!g_pointerChainCount||!g_uiPointerTargetValid)ok=false;else if(g_chainPointerSize&&g_chainPointerSize!=g_pointerSize)ok=false;else{usize before=g_pointerChainCount,out=0;PointerChain_* tmp=(PointerChain_*)HeapAlloc(g_heap,0,before*sizeof(PointerChain_));if(!tmp)ok=false;else{for(usize i=0;i<before&&!g_pointerCancelRequested;++i){uptr resolved=0;if(resolve_pointer_chain(g_pointerChains[i],resolved)&&resolved==g_uiTask.pointerTarget)tmp[out++]=g_pointerChains[i];}if(g_pointerCancelRequested)cancelled=true;else{for(usize i=0;i<out;++i)g_pointerChains[i]=tmp[i];g_pointerChainCount=out;}HeapFree(g_heap,0,tmp);}}
-    }
+        if(!g_pointerChainCount||!g_uiPointerTargetValid)ok=false;else{u64 before=0,after=0;char engineError[256]{};ok=cw_gui_engine_pointer_rescan((u64)g_uiTask.pointerTarget,&before,&after,engineError,sizeof(engineError));if(ok){g_uiPointerBefore=(usize)before;ok=ui_sync_pointer_chains_from_engine();}}
+    }else if(ok)ok=false;
     PostMessageA(g_hwnd,WM_APP_POINTER_DONE_,cancelled?2:(ok?1:0),(LPARAM)g_uiTask.kind);return 0;
 }
 static bool ui_filter_pair(char* filter,usize cap,usize& n,const char* label,const char* pattern){
@@ -2623,11 +1888,11 @@ static bool ui_load_pointer_profile_file(const char* path){
     HANDLE h=CreateFileA(path,GENERIC_READ,1,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);if((uptr)h==INVALID_HANDLE_BITS)return false;const char expect[8]={'C','W','P','R','O','F','0','1'};const char legacy[8]={'M','C','E','P','R','O','F','1'};char magic[8]{};u32 ver=0,ps=0,ty=0;u16 plen=0;u64 count=0;bool ok=file_read_exact(h,magic,8)&&file_read_exact(h,&ver,4)&&file_read_exact(h,&ps,4)&&file_read_exact(h,&ty,4)&&file_read_exact(h,&plen,2)&&file_read_exact(h,&count,8);
     if(!ok||(!memequal(magic,expect,8)&&!memequal(magic,legacy,8))||ver!=1||(ps!=4&&ps!=8)||ty>(u32)ValueType::Double||plen>=260||count==0||count>MAX_POINTER_CHAINS){CloseHandle(h);return false;}char proc[260]{};if(plen&&!file_read_exact(h,proc,plen)){CloseHandle(h);return false;}proc[plen]=0;if(g_process&&ps!=g_pointerSize){CloseHandle(h);return false;}
     clear_pointer_index();clear_pointer_chains();if(!reserve_pointer_chains((usize)count)){CloseHandle(h);return false;}for(u64 i=0;i<count&&ok;++i){PointerChain_ c{};u16 ml=0;u64 root=0;u32 depth=0;if(!file_read_exact(h,&ml,2)||ml==0||ml>=256||!file_read_exact(h,c.module,ml)||!file_read_exact(h,&root,8)||!file_read_exact(h,&depth,4)||depth==0||depth>MAX_POINTER_DEPTH){ok=false;break;}c.module[ml]=0;c.rootOffset=(uptr)root;c.depth=(u8)depth;for(u32 j=0;j<depth;++j){u64 raw=0;if(!file_read_exact(h,&raw,8)){ok=false;break;}memcopy(&c.offsets[j],&raw,8);}if(ok)g_pointerChains[g_pointerChainCount++]=c;}
-    CloseHandle(h);if(!ok){clear_pointer_chains();return false;}g_chainPointerSize=(u8)ps;g_pointerChainsTruncated=false;g_uiPointerTargetType=(u8)ty;g_uiPointerProfileType=(u8)ty;strcopy(g_uiPointerProfilePath,sizeof(g_uiPointerProfilePath),path);strcopy(g_uiPointerProfileProcess,sizeof(g_uiPointerProfileProcess),proc);g_uiSelectedPointer=0;g_uiPointerScroll=0;ui_pointer_reset_cache();return true;
+    CloseHandle(h);if(!ok){clear_pointer_chains();return false;}g_chainPointerSize=(u8)ps;g_pointerChainsTruncated=false;g_uiPointerTargetType=(u8)ty;g_uiPointerProfileType=(u8)ty;strcopy(g_uiPointerProfilePath,sizeof(g_uiPointerProfilePath),path);strcopy(g_uiPointerProfileProcess,sizeof(g_uiPointerProfileProcess),proc);g_uiSelectedPointer=0;g_uiPointerScroll=0;ui_pointer_reset_cache();if(g_process&&!ui_push_pointer_chains_to_engine())return false;return true;
 }
 static void sort_uptr_values(uptr* a,usize count){if(!a||count<2)return;auto sift=[&](usize start,usize n){usize root=start;for(;;){usize child=root*2+1;if(child>=n)return;usize best=root;if(a[best]<a[child])best=child;if(child+1<n&&a[best]<a[child+1])best=child+1;if(best==root)return;uptr v=a[root];a[root]=a[best];a[best]=v;root=best;}};for(usize i=count/2;i>0;--i)sift(i-1,count);for(usize end=count;end>1;--end){uptr v=a[0];a[0]=a[end-1];a[end-1]=v;sift(0,end-1);}}
 static bool ui_resolve_pointer_profile(uptr& address,usize& agreeing,usize& resolvedCount){
-    address=0;agreeing=0;resolvedCount=0;if(!g_process||!g_pointerChainCount)return false;if(!refresh_modules())return false;uptr* values=(uptr*)HeapAlloc(g_heap,0,g_pointerChainCount*sizeof(uptr));if(!values)return false;for(usize i=0;i<g_pointerChainCount;++i){uptr r=0;if(resolve_pointer_chain(g_pointerChains[i],r))values[resolvedCount++]=r;}if(!resolvedCount){HeapFree(g_heap,0,values);return false;}sort_uptr_values(values,resolvedCount);uptr best=values[0];usize bestCount=1,run=1;for(usize i=1;i<resolvedCount;++i){if(values[i]==values[i-1]){++run;}else{if(run>bestCount){bestCount=run;best=values[i-1];}run=1;}}if(run>bestCount){bestCount=run;best=values[resolvedCount-1];}HeapFree(g_heap,0,values);address=best;agreeing=bestCount;return true;
+    address=0;agreeing=0;resolvedCount=0;if(!g_process||!g_pointerChainCount)return false;if(!ui_push_pointer_chains_to_engine())return false;uptr* values=(uptr*)HeapAlloc(g_heap,0,g_pointerChainCount*sizeof(uptr));if(!values)return false;for(usize i=0;i<g_pointerChainCount;++i){u64 remote=0;char engineError[256]{};if(cw_gui_engine_pointer_resolve((u64)i,&remote,engineError,sizeof(engineError))){uptr r=(uptr)remote;g_uiPointerResolvedCache[i]=r;g_uiPointerResolveState[i]=2;values[resolvedCount++]=r;}else g_uiPointerResolveState[i]=1;}if(!resolvedCount){HeapFree(g_heap,0,values);return false;}sort_uptr_values(values,resolvedCount);uptr best=values[0];usize bestCount=1,run=1;for(usize i=1;i<resolvedCount;++i){if(values[i]==values[i-1]){++run;}else{if(run>bestCount){bestCount=run;best=values[i-1];}run=1;}}if(run>bestCount){bestCount=run;best=values[resolvedCount-1];}HeapFree(g_heap,0,values);address=best;agreeing=bestCount;return true;
 }
 static void ui_save_pointer_profile(){char path[260]{};if(!g_pointerChainCount){ui_set_status(ui_tr("pointers.saveNeedChains"),2);return;}if(!ui_pointer_file_dialog(true,path))return;if(ui_save_pointer_profile_file(path)){char b[300]{};usize n=0;append_str(b,sizeof(b),n,ui_tr("pointers.profileSavedPrefix"));append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n,ui_tr("pointers.profileSavedSuffix"));b[n]=0;ui_set_status(b,1);}else ui_set_status(ui_tr("pointers.saveFailed"),3);InvalidateRect(g_hwnd,nullptr,0);}
 static void ui_load_pointer_profile(){char path[260]{};if(!ui_pointer_file_dialog(false,path))return;if(!ui_load_pointer_profile_file(path)){ui_set_status(ui_tr("pointers.loadInvalid"),3);return;}uptr a=0;usize agree=0,res=0;if(g_process&&ui_resolve_pointer_profile(a,agree,res)){g_uiPointerTarget=a;g_uiPointerTargetValid=(agree*2>res);char b[380]{};usize n=0;append_str(b,sizeof(b),n,ui_tr("pointers.profileLoadedPrefix"));append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n,ui_tr("pointers.profileLoadedConsensus"));append_u64_dec(b,sizeof(b),n,agree);append_str(b,sizeof(b),n,"/");append_u64_dec(b,sizeof(b),n,res);append_str(b,sizeof(b),n,g_uiPointerTargetValid?ui_tr("pointers.profileLoadedSame"):ui_tr("pointers.profileLoadedAmbiguous"));b[n]=0;ui_set_status(b,g_uiPointerTargetValid?1:2);}else{g_uiPointerTargetValid=false;ui_set_status(ui_tr("pointers.profileLoadedAttach"),1);}InvalidateRect(g_hwnd,nullptr,0);}
@@ -2637,7 +1902,7 @@ static void ui_add_pointer_profile_to_watch(){
 
 
 static void ui_add_pointer_chain_to_watch(int idx){
-    if(!g_process||idx<0||(usize)idx>=g_pointerChainCount){ui_set_status(ui_tr("pointers.chainUnavailable"),2);return;}ValueType t=(ValueType)g_uiPointerTargetType;if(t==ValueType::Invalid||t==ValueType::Mixed){ui_set_status(ui_tr("pointers.invalidProfileType"),3);return;}uptr address=0;if(g_uiPointerResolveState[idx]==2)address=g_uiPointerResolvedCache[idx];else if(!resolve_pointer_chain(g_pointerChains[idx],address)){ui_set_status(ui_tr("pointers.chainResolveFailed"),3);return;}
+    if(!g_process||idx<0||(usize)idx>=g_pointerChainCount){ui_set_status(ui_tr("pointers.chainUnavailable"),2);return;}ValueType t=(ValueType)g_uiPointerTargetType;if(t==ValueType::Invalid||t==ValueType::Mixed){ui_set_status(ui_tr("pointers.invalidProfileType"),3);return;}uptr address=0;if(g_uiPointerResolveState[idx]==2)address=g_uiPointerResolvedCache[idx];else{u64 remote=0;char engineError[256]{};if(!cw_gui_engine_pointer_resolve((u64)idx,&remote,engineError,sizeof(engineError))){ui_set_status(ui_tr("pointers.chainResolveFailed"),3);return;}address=(uptr)remote;g_uiPointerResolvedCache[idx]=address;g_uiPointerResolveState[idx]=2;}
     int ex=ui_find_watch(address,t);if(ex>=0){g_uiSelectedWatch=ex;ui_fill_watch_edit(true);g_uiView=UI_VIEW_SCANNER;ui_set_status(ui_tr("pointers.chainAlreadySelected"),0);InvalidateRect(g_hwnd,nullptr,0);return;}
     int slot=-1;for(int i=0;i<(int)UI_WATCH_LIMIT;++i)if(!g_uiWatches[i].active){slot=i;break;}if(slot<0){ui_set_status(ui_tr("status.addressListFull"),3);return;}UiWatch_& w=g_uiWatches[slot];w.active=true;w.address=address;w.type=(u8)t;w.name[0]=0;memzero(w.scanValue,8);u8 raw[8]{};if(ui_read_value(address,t,raw))memcopy(w.scanValue,raw,type_size(t));++g_uiWatchCount;g_uiSelectedWatch=slot;int row=ui_watch_row_for_slot(slot);int visible=ui_maxi(1,(g_ui.watchTable.h-34)/UI_WATCH_ROW_H);if(row>=g_uiWatchScroll+visible)g_uiWatchScroll=row-visible+1;ui_fill_watch_edit(true);ui_watch_list_changed(true);g_uiPointerTarget=address;g_uiPointerTargetValid=true;g_uiView=UI_VIEW_SCANNER;char b[220]{};usize n=0;append_str(b,sizeof(b),n,ui_tr("pointers.chainPrefix"));append_u64_dec(b,sizeof(b),n,(u64)idx);append_str(b,sizeof(b),n,ui_tr("pointers.chainAddedSuffix"));b[n]=0;ui_set_status(b,1);InvalidateRect(g_hwnd,nullptr,0);
 }
@@ -2769,7 +2034,7 @@ static void ui_draw_pointer_results(HDC dc){
     int widths[6]{};ui_pointer_column_widths(widths);for(int r=0;r<visible;++r){int idx=g_uiPointerScroll+r;if(idx>=total)break;UiRect row{g_ui.pointerTable.x,bodyY+r*rowH,g_ui.pointerTable.w-8,rowH-1};bool sel=g_uiSelectedPointer==idx;bool hov=ui_contains(row,g_uiMouseX,g_uiMouseY);if(sel)ui_round(dc,row,g_brushSelected,nullptr,5);else if(hov)ui_round(dc,row,g_brushHover,nullptr,5);char ix[32]{},base[320]{},offs[520]{},resolved[64]{},value[96]{},state[48]{};usize n=0;append_char(ix,sizeof(ix),n,'#');append_u64_dec(ix,sizeof(ix),n,(u64)idx);ix[n]=0;bool match=false,rd=false;ui_pointer_chain_text((usize)idx,base,offs,resolved,value,state,match,rd);const char* vals[6]={ix,base,offs,resolved,value,state};int x=row.x+10;for(int c=0;c<6;++c){COLORREF col=c==0?Z500:(c==5?(match?GREEN400:(rd?Z300:AMBER400)):(c==4?BLUE300:(c==2?Z400:Z200)));HFONT f=(c==1||c==2||c==3||c==4)?g_fontMono:g_fontSmall;ui_text(dc,vals[c],{x,row.y,widths[c]-6,row.h},col,f,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_|DT_END_ELLIPSIS_);x+=widths[c];}}
     ui_draw_scrollbar(dc,g_ui.pointerTable,total,g_uiPointerScroll,visible);
 }
-static void ui_draw_footer(HDC dc){ui_round(dc,g_ui.footer,g_brushPanel,nullptr,8);COLORREF c=g_uiStatusKind==1?GREEN400:(g_uiStatusKind==2?AMBER400:(g_uiStatusKind==3?RED400:Z500));UiRect dot{g_ui.footer.x+12,g_ui.footer.y+12,8,8};HBRUSH br=g_uiStatusKind==1?g_brushSuccess:(g_uiStatusKind==2?g_brushWarn:(g_uiStatusKind==3?g_brushError:g_brushSelected));ui_round(dc,dot,br,nullptr,8);UiRect t{g_ui.footer.x+28,g_ui.footer.y,ui_maxi(40,g_ui.locale.x-g_ui.footer.x-38),g_ui.footer.h};ui_text(dc,g_uiStatus,t,c,g_fontSmall,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_|DT_END_ELLIPSIS_);const char* code=(g_uiLocaleIndex>=0&&g_uiLocaleIndex<g_uiLocaleChoiceCount)?g_uiLocaleChoices[g_uiLocaleIndex].code:"en-US";ui_button(dc,g_ui.locale,code,false,true);}
+static void ui_draw_footer(HDC dc){ui_round(dc,g_ui.footer,g_brushPanel,nullptr,8);COLORREF c=g_uiStatusKind==1?GREEN400:(g_uiStatusKind==2?AMBER400:(g_uiStatusKind==3?RED400:Z500));UiRect dot{g_ui.footer.x+12,g_ui.footer.y+12,8,8};HBRUSH br=g_uiStatusKind==1?g_brushSuccess:(g_uiStatusKind==2?g_brushWarn:(g_uiStatusKind==3?g_brushError:g_brushSelected));ui_round(dc,dot,br,nullptr,8);UiRect t{g_ui.footer.x+28,g_ui.footer.y,ui_maxi(40,g_ui.engineBuild.x-g_ui.footer.x-38),g_ui.footer.h};ui_text(dc,g_uiStatus,t,c,g_fontSmall,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_|DT_END_ELLIPSIS_);const char* engineLabel=g_uiBusy==3?ui_tr("engine.building"):(g_uiEngineReady?ui_tr("engine.ready"):(g_uiEngineBuilderAvailable?ui_tr("engine.build"):ui_tr("engine.builderMissing")));ui_button(dc,g_ui.engineBuild,engineLabel,g_uiEngineReady,!g_uiBusy&&!g_uiEngineReady&&g_uiEngineBuilderAvailable);const char* code=(g_uiLocaleIndex>=0&&g_uiLocaleIndex<g_uiLocaleChoiceCount)?g_uiLocaleChoices[g_uiLocaleIndex].code:"en-US";ui_button(dc,g_ui.locale,code,false,g_uiBusy!=3);}
 
 static void ui_draw_popup(HDC dc){
     if(g_uiPopup==UI_POP_NONE)return;
@@ -2813,7 +2078,8 @@ static bool ui_watch_row_rect_for_slot(int slot,UiRect& row){int logical=ui_watc
 
 static void ui_click(int x,int y){
     if(ui_popup_click(x,y))return;
-    if(ui_contains(g_ui.locale,x,y)&&g_uiLocaleChoiceCount>0){int next=(g_uiLocaleIndex+1)%g_uiLocaleChoiceCount;ui_select_locale(next,true,true);return;}
+    if(ui_contains(g_ui.locale,x,y)&&g_uiLocaleChoiceCount>0&&g_uiBusy!=3){int next=(g_uiLocaleIndex+1)%g_uiLocaleChoiceCount;ui_select_locale(next,true,true);return;}
+    if(!g_uiBusy&&ui_contains(g_ui.engineBuild,x,y)){ui_start_engine_build();return;}
     if(!g_uiBusy){if(ui_contains(g_ui.tabScanner,x,y)){g_uiView=UI_VIEW_SCANNER;g_uiPopup=UI_POP_NONE;InvalidateRect(g_hwnd,nullptr,0);return;}if(ui_contains(g_ui.tabPointers,x,y)){g_uiView=UI_VIEW_POINTERS;g_uiPopup=UI_POP_NONE;InvalidateRect(g_hwnd,nullptr,0);return;}if(ui_contains(g_ui.tabTrainer,x,y)){g_uiView=UI_VIEW_TRAINER;g_uiPopup=UI_POP_NONE;InvalidateRect(g_hwnd,nullptr,0);return;}}
     if(g_uiBusy){if(g_uiBusy==2&&g_uiView==UI_VIEW_POINTERS&&ui_contains(g_ui.pointerCancel,x,y)){g_pointerCancelRequested=1;ui_set_status(ui_tr("pointers.cancelRequested"),2);}return;}
     if(ui_contains(g_ui.target,x,y)){ui_set_popup(UI_POP_PROCESS);return;}if(ui_contains(g_ui.refresh,x,y)){ui_refresh_processes();return;}if(ui_contains(g_ui.attach,x,y)){if(!ui_selected_is_attached())ui_attach_selected();return;}
@@ -2880,7 +2146,7 @@ static void ui_create_controls(){
 static void ui_try_dark_titlebar(HWND hwnd){HINSTANCE dwm=LoadLibraryA("dwmapi.dll");if(!dwm)return;using Fn=int (__stdcall *)(HWND,DWORD,LPCVOID,DWORD);auto fn=(Fn)GetProcAddress(dwm,"DwmSetWindowAttribute");if(!fn)return;BOOL dark=1;fn(hwnd,20,&dark,(DWORD)sizeof(dark));fn(hwnd,19,&dark,(DWORD)sizeof(dark));}
 
 static LRESULT __stdcall ui_wndproc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam){
-    if(msg==WM_CREATE_){g_hwnd=hwnd;ui_create_controls();SetTimer(hwnd,1,1000,nullptr);return 0;}
+    if(msg==WM_CREATE_){g_hwnd=hwnd;ui_create_controls();g_uiEngineBuilderAvailable=cw_gui_engine_builder_exists();g_uiEngineFilePresent=cw_gui_engine_exists();g_uiEngineReady=false;if(g_uiEngineFilePresent){char engineError[256]{};if(cw_gui_engine_start(engineError,sizeof(engineError)))g_uiEngineReady=true;else ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineUnavailable"):(engineError[0]?engineError:ui_tr("status.engineBuilderMissing")),3);}else ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineNotBuilt"):ui_tr("status.engineBuilderMissing"),g_uiEngineBuilderAvailable?2:3);SetTimer(hwnd,1,1000,nullptr);return 0;}
     if(msg==WM_GETMINMAXINFO_){MINMAXINFO_* mm=(MINMAXINFO_*)lParam;if(mm){mm->ptMinTrackSize.x=1024;mm->ptMinTrackSize.y=720;}return 0;}
     if(msg==WM_SIZE_){ui_compute_layout();ui_sync_edits();InvalidateRect(hwnd,nullptr,0);return 0;}
     if(msg==WM_ERASEBKGND_)return 1;
@@ -2905,17 +2171,18 @@ static LRESULT __stdcall ui_wndproc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lPar
             }
         }return 0;}
     if(msg==WM_MOUSEWHEEL_){POINT_ p{(short)(lParam&0xFFFF),(short)((lParam>>16)&0xFFFF)};ScreenToClient(hwnd,&p);short d=(short)((wParam>>16)&0xFFFF);ui_scroll((int)d,(int)p.x,(int)p.y);return 0;}
-    if(msg==WM_TIMER_){if(!g_uiBusy&&g_uiView==UI_VIEW_POINTERS)ui_pointer_refresh_visible_cache();if(!g_uiBusy||g_uiBusy==2)InvalidateRect(hwnd,nullptr,0);return 0;}
+    if(msg==WM_TIMER_){if(!g_uiBusy&&g_uiView==UI_VIEW_POINTERS)ui_pointer_refresh_visible_cache();if(!g_uiBusy||g_uiBusy==2||g_uiBusy==3)InvalidateRect(hwnd,nullptr,0);return 0;}
     if(msg==WM_APP_SCAN_DONE_){g_uiBusy=0;if(g_uiTask.kind==1){if(wParam)g_uiScanType=g_uiUnknownFlow?ui_scan_type_from_next_mode(guided_recommended_mode()):0;else{g_uiUnknownFlow=false;g_uiUnknownInitialMode=0;g_uiScanType=0;}}if(!g_snapshotActive&&g_resultCount)g_uiSelectedResult=(g_rankingEnabled&&g_rankedCount&&!g_rankingDirty)?(int)g_rankedIndices[0]:0;else g_uiSelectedResult=-1;g_uiResultScroll=0;ui_sync_edits();if(wParam){char b[260];usize n=0;if(g_snapshotActive){append_str(b,sizeof(b),n,ui_tr("status.unknownReadyPrefix"));ui_append_compact_count(b,sizeof(b),n,g_snapshotCandidates);append_str(b,sizeof(b),n,ui_tr("status.unknownReadyMiddle"));append_u64_dec(b,sizeof(b),n,g_snapshotBytes/(1024*1024));append_str(b,sizeof(b),n,ui_tr("status.unknownReadySuffix"));}else{append_str(b,sizeof(b),n,ui_tr("status.scanDonePrefix"));ui_append_compact_count(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n,ui_tr("status.scanDoneSuffix"));}b[n]=0;ui_set_status(b,1);}else ui_set_status(ui_tr("status.scanFailed"),3);InvalidateRect(hwnd,nullptr,0);return 0;}
+    if(msg==WM_APP_ENGINE_BUILD_DONE_){g_uiBusy=0;g_uiEngineBuilderAvailable=cw_gui_engine_builder_exists();g_uiEngineFilePresent=cw_gui_engine_exists();if(wParam){g_uiEngineReady=true;ui_refresh_processes();ui_set_status(ui_tr("status.engineBuildDone"),1);}else{g_uiEngineReady=false;ui_set_status(g_uiEngineBuildError[0]?g_uiEngineBuildError:ui_tr("status.engineBuildFailed"),3);}InvalidateRect(hwnd,nullptr,0);return 0;}
     if(msg==WM_APP_POINTER_DONE_){int kind=(int)lParam;g_uiBusy=0;g_uiPointerPhase=0;g_pointerCancelRequested=0;g_uiSelectedPointer=g_pointerChainCount?0:-1;g_uiPointerScroll=0;ui_pointer_reset_cache();ui_pointer_refresh_visible_cache();if(wParam==2){ui_set_status(ui_tr("pointers.cancelled"),2);}else if(!wParam){ui_set_status(kind==4?ui_tr("pointers.rescanFailed"):ui_tr("pointers.scanFailed"),3);}else{char b[300];usize n=0;if(kind==4){append_str(b,sizeof(b),n,ui_tr("pointers.rescanDonePrefix"));append_u64_dec(b,sizeof(b),n,g_uiPointerBefore);append_str(b,sizeof(b),n," -> ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n,ui_tr("pointers.stableChainsSuffix"));}else{append_str(b,sizeof(b),n,ui_tr("pointers.scanDonePrefix"));append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n,ui_tr("pointers.chainsSuffix"));if(g_uiPointerTargetedUsed){append_str(b,sizeof(b),n,ui_tr("pointers.targetedLevel"));append_u64_dec(b,sizeof(b),n,g_pointerLayerDepth);append_str(b,sizeof(b),n,ui_tr("pointers.matches"));append_u64_dec(b,sizeof(b),n,g_pointerLayerMatches);if(g_pointerLayerTruncated)append_str(b,sizeof(b),n,ui_tr("pointers.frontierLimited"));}else{append_str(b,sizeof(b),n,ui_tr("pointers.indexPrefix"));append_u64_dec(b,sizeof(b),n,g_uiPointerIndexed);if(g_uiPointerIndexTruncated)append_str(b,sizeof(b),n,ui_tr("pointers.partial"));append_str(b,sizeof(b),n,ui_tr("pointers.targetParents"));append_u64_dec(b,sizeof(b),n,g_uiPointerLevel1Candidates);if(g_uiPointerSearchBudgetHit)append_str(b,sizeof(b),n,ui_tr("pointers.budgetHit"));else if(g_uiPointerSearchTruncated)append_str(b,sizeof(b),n,ui_tr("pointers.searchLimited"));}if(g_uiPointerAutoRootFallback)append_str(b,sizeof(b),n,ui_tr("pointers.fallbackModules"));append_str(b,sizeof(b),n,".");}b[n]=0;ui_set_status(b,(kind==3&&g_pointerChainCount==0)?2:1);}InvalidateRect(hwnd,nullptr,0);return 0;}
     if(msg==WM_PAINT_){PAINTSTRUCT_ ps{};HDC dc=BeginPaint(hwnd,&ps);RECT_ c{};GetClientRect(hwnd,&c);int w=(int)(c.right-c.left),h=(int)(c.bottom-c.top);HDC mem=CreateCompatibleDC(dc);HBITMAP bmp=CreateCompatibleBitmap(dc,w,h);HGDIOBJ old=SelectObject(mem,(HGDIOBJ)bmp);ui_render(mem);BitBlt(dc,0,0,w,h,mem,0,0,SRCCOPY_);SelectObject(mem,old);DeleteObject((HGDIOBJ)bmp);DeleteDC(mem);EndPaint(hwnd,&ps);return 0;}
-    if(msg==WM_CLOSE_&&g_uiBusy){ui_set_status(g_uiBusy==2?ui_tr("status.closePointerBusy"):ui_tr("status.closeScanBusy"),2);return 0;}
-    if(msg==WM_DESTROY_){KillTimer(hwnd,1);close_target();free_pointer_maps();if(g_results)HeapFree(g_heap,0,g_results);if(g_aobResults)HeapFree(g_heap,0,g_aobResults);if(g_pointerIndex)HeapFree(g_heap,0,g_pointerIndex);if(g_pointerChains)HeapFree(g_heap,0,g_pointerChains);if(g_snapshotBlocks)HeapFree(g_heap,0,g_snapshotBlocks);ui_destroy_resources();PostQuitMessage(0);return 0;}
+    if(msg==WM_CLOSE_&&g_uiBusy){ui_set_status(g_uiBusy==3?ui_tr("status.closeEngineBuildBusy"):(g_uiBusy==2?ui_tr("status.closePointerBusy"):ui_tr("status.closeScanBusy")),2);return 0;}
+    if(msg==WM_DESTROY_){KillTimer(hwnd,1);close_target();cw_gui_engine_shutdown();free_pointer_maps();if(g_results)HeapFree(g_heap,0,g_results);if(g_aobResults)HeapFree(g_heap,0,g_aobResults);if(g_pointerIndex)HeapFree(g_heap,0,g_pointerIndex);if(g_pointerChains)HeapFree(g_heap,0,g_pointerChains);if(g_snapshotBlocks)HeapFree(g_heap,0,g_snapshotBlocks);ui_destroy_resources();PostQuitMessage(0);return 0;}
     return DefWindowProcA(hwnd,msg,wParam,lParam);
 }
 
 extern "C" void guiCRTStartup(){
-    SetProcessDPIAware();g_heap=GetProcessHeap();ui_locale_initialize();strcopy(g_uiStatus,sizeof(g_uiStatus),ui_tr("status.ready"));g_out=CreateFileA("NUL",GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);DWORD tid=0;HANDLE fth=CreateThread(nullptr,0,freeze_thread,nullptr,0,&tid);if(fth)CloseHandle(fth);
+    SetProcessDPIAware();g_heap=GetProcessHeap();ui_locale_initialize();strcopy(g_uiStatus,sizeof(g_uiStatus),ui_tr("status.ready"));g_out=CreateFileA("NUL",GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
     HINSTANCE inst=GetModuleHandleA(nullptr);WNDCLASSEXA_ wc{};wc.cbSize=(UINT)sizeof(wc);wc.style=CS_DBLCLKS_;wc.lpfnWndProc=ui_wndproc;wc.hInstance=inst;wc.hCursor=LoadCursorA(nullptr,(const char*)(uptr)32512);wc.hbrBackground=nullptr;wc.lpszClassName="CheatWizardGuiV2";
     if(!RegisterClassExA(&wc)){MessageBoxA(nullptr,"RegisterClassExA failed.",ui_tr("app.name"),MB_OK_|MB_ICONERROR_);ExitProcess(1);}DWORD style=WS_OVERLAPPED_|WS_CAPTION_|WS_SYSMENU_|WS_MINIMIZEBOX_|WS_MAXIMIZEBOX_|WS_THICKFRAME_;
     HWND hwnd=CreateWindowExA(0,"CheatWizardGuiV2","Cheat Wizard v1.7.3 - Memory Scanner, Pointers & Trainer Projects",style,70,45,1320,860,nullptr,nullptr,inst,nullptr);if(!hwnd){MessageBoxA(nullptr,"CreateWindowExA failed.",ui_tr("app.name"),MB_OK_|MB_ICONERROR_);ExitProcess(2);}g_hwnd=hwnd;ui_set_localized_window_title();ui_try_dark_titlebar(hwnd);ShowWindow(hwnd,SW_SHOW_);UpdateWindow(hwnd);

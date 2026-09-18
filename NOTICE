@@ -2,3 +2,10 @@ Cheat Wizard
 Copyright 2026 FlokiTV
 
 This product includes software developed by FlokiTV for the Cheat Wizard project.
+
+The standalone CW Engine Builder embeds a pruned llvm-mingw toolchain derived from
+llvm-mingw 20260908 (UCRT x86_64). LLVM/Clang/LLD/libc++ components are provided
+under the Apache License 2.0 with LLVM Exceptions and the distribution also
+contains third-party/minGW-w64 license terms. The verbatim upstream license text
+is provided in third_party/llvm-mingw/LICENSE.TXT and inside the builder payload
+as TOOLCHAIN-LICENSE.txt.

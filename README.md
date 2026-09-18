@@ -28,11 +28,9 @@ Cheat Wizard deliberately separates its tools:
 
 `cw.exe` is not an RPC server and is never a runtime dependency of a generated trainer.
 
-## Rebrand and compatibility
+### Engine architecture migration
 
-The public product name is **Cheat Wizard**, abbreviated **CW**. The source tree builds `cw.exe`, `cw-gui.exe` and `cw-trainer-builder.exe`; the prebuilt public ZIP currently ships `cw-gui.exe` and `cw-trainer-builder.exe`.
-
-The source tree uses `cw::`, `include/cw/` and `cw_*` build targets consistently. New saves use CW-native persistence (`.cwptr`, `.cwchain`, `.cwmap`, `.cwscan`, `.cwaob`, `.cwtrainer`) and CW magics/identifiers. Compatibility with earlier MiniCE releases remains at the import boundary: `.mcptr`, `.mcep`, `.mcpm`, `.mces`, `.mcea` and `minice-trainer` version 1 are still readable.
+Cheat Wizard is being refactored so `cw.exe` and `cw-gui.exe` become frontends over a dedicated local `cw-engine.exe`. The engine will be generated locally by a standalone `cw-engine-builder.exe`, placed beside the application, and accessed through a versioned local Named Pipe protocol. Generated Trainers remain self-contained and do not depend on the interactive engine. The accepted design and migration criteria are documented in [`docs/ENGINE_ARCHITECTURE.md`](docs/ENGINE_ARCHITECTURE.md).
 
 ## Locales
 

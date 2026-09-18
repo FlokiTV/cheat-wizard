@@ -3,7 +3,8 @@
 Version: 1.7.0
 Platform: Windows x64
 Primary frontend: `cw-gui.exe`
-Engine/diagnostic frontend: `cw.exe`
+Current engine/diagnostic frontend: `cw.exe` (legacy direct-access topology during migration)
+Target engine boundary: locally built `cw-engine.exe`; `cw.exe` and `cw-gui.exe` become IPC frontends. See [`ENGINE_ARCHITECTURE.md`](ENGINE_ARCHITECTURE.md).
 
 ## 1. Problem statement
 
