@@ -63,11 +63,10 @@ The official `v1.7.0` GitHub asset was reproduced as a Microsoft Defender ML fal
 Current release policy:
 
 - GitHub Actions runner: `windows-2022`.
-- Required compiler: VS 2022 MSVC v14.43 / `19.43.x`, explicitly installed and selected with CMake `-T "version=14.43"`.
-- CMake compiler-version assertion: the job fails if the selected compiler is not `19.43.x`.
-- Pre-publication antivirus gate: `scripts/Test-ReleaseWithDefender.ps1`.
-- Defender scan targets: the staged release payload and the final ZIP only.
+- Required compiler family: Visual Studio 2022 MSVC `19.4x`, provided by the pinned `windows-2022` runner; official workflows reject `19.5x` codegen.
+- Main CI antivirus gate: `scripts/Test-ReleaseWithDefender.ps1` scans `cw.exe`, `cw-gui.exe` and `cw-trainer-builder.exe` before a release tag is created.
+- Pre-publication antivirus gate: the same script scans the staged release payload and final ZIP before any GitHub Release upload.
 - Defender mode: custom scan with `-DisableRemediation`, so a detection remains observable and causes a non-zero result instead of being silently remediated.
 - Security intelligence update is mandatory by default; a failed update or unavailable scanner blocks publication.
 
-The GitHub-hosted `windows-2022` image still evolves over time, so pinning the OS label alone is not considered sufficient. The workflow pins the MSVC minor toolset separately.
+The GitHub-hosted `windows-2022` image still evolves over time, so the workflow also asserts the VS2022 `19.4x` compiler family and runs Defender against the actual produced binaries. The release job repeats the Defender gate against the final distributable package.

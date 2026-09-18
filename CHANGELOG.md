@@ -4,9 +4,9 @@
 
 ### Release pipeline hardening
 
-- Pin Windows CI and release builds to the `windows-2022` runner and explicitly install/select the VS 2022 MSVC v14.43 toolset (`19.43.x`) instead of inheriting the moving default compiler from GitHub-hosted runner images.
-- Verify the compiler version selected by CMake and fail the job unless it is `19.43.x`.
-- Add a fail-closed Microsoft Defender gate before release upload/publication. The gate updates security intelligence, scans the staged release payload and final ZIP with remediation disabled, and blocks publication on either a detection or scanner error.
+- Pin Windows CI and release builds to the `windows-2022` runner / Visual Studio 2022 instead of inheriting the moving `windows-latest` compiler family.
+- Verify that CMake selected the VS2022 MSVC `19.4x` compiler family and reject newer `19.5x` codegen for official Windows builds.
+- Add fail-closed Microsoft Defender gates to both main CI and release publication. CI scans the three distributable executables; release additionally scans the staged payload and final ZIP with remediation disabled and blocks publication on either a detection or scanner error.
 
 ## 1.7.0 - 2026-09-17
 
