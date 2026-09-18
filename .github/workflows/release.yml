@@ -18,8 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Prepare local engine builder payload
+        shell: pwsh
+        run: .\scripts\Prepare-EngineBuilderPayload.ps1 -Output .\build\engine-builder-payload\engine-builder-payload.zip
+
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON
+        shell: pwsh
+        run: |
+          $payload = (Resolve-Path .\build\engine-builder-payload\engine-builder-payload.zip).Path
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DCW_ENGINE_BUILDER_PAYLOAD="$payload"
 
       - name: Verify VS2022 compiler family
         shell: pwsh
