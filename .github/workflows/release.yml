@@ -1,0 +1,79 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Core tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: CLI smoke start
+        shell: pwsh
+        run: '"quit" | .\build\Release\cw.exe'
+
+      - name: Trainer builder smoke
+        shell: pwsh
+        run: .\tests\TrainerBuilderSmoke.ps1 -Builder .\build\Release\cw-trainer-builder.exe -WorkDir .\build\trainer-smoke
+
+      - name: Package Windows x64 release
+        shell: pwsh
+        run: .\scripts\Package-Release.ps1 -BuildDir .\build -OutputDir .\dist -Version "${{ github.ref_name }}"
+
+      - name: Generate release notes
+        shell: pwsh
+        run: .\scripts\New-ReleaseNotes.ps1 -Tag "${{ github.ref_name }}" -Output .\release-notes.md
+
+      - name: Upload release build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cheat-Wizard-${{ github.ref_name }}-win64
+          path: |
+            dist/Cheat-Wizard-${{ github.ref_name }}-win64.zip
+            dist/Cheat-Wizard-${{ github.ref_name }}-win64.zip.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ github.ref_name }}"
+          $repo = "${{ github.repository }}"
+          $zip = ".\dist\Cheat-Wizard-$tag-win64.zip"
+          $checksum = "$zip.sha256"
+          $title = "Cheat Wizard $tag"
+
+          gh release view $tag --repo $repo *> $null
+          $exists = $LASTEXITCODE -eq 0
+
+          if ($exists) {
+            gh release upload $tag $zip $checksum --repo $repo --clobber
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
+            gh release edit $tag --repo $repo --title $title --notes-file .\release-notes.md --latest
+            if ($LASTEXITCODE -ne 0) { throw "gh release edit failed" }
+          }
+          else {
+            gh release create $tag $zip $checksum --repo $repo --verify-tag --title $title --notes-file .\release-notes.md --latest
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+          }

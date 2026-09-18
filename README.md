@@ -1,6 +1,17 @@
 # Cheat Wizard v1.7.0
 
+[![Windows build](https://github.com/FlokiTV/cheat-wizard/actions/workflows/windows.yml/badge.svg)](https://github.com/FlokiTV/cheat-wizard/actions/workflows/windows.yml)
+[![Release](https://img.shields.io/github/v/release/FlokiTV/cheat-wizard)](https://github.com/FlokiTV/cheat-wizard/releases/latest)
+[![License](https://img.shields.io/github/license/FlokiTV/cheat-wizard)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-blue)
+
 Cheat Wizard (CW) is a Windows x64 memory-scanning and pointer-analysis project written in C++20. It works on user-selected processes through ordinary user-mode Win32 APIs.
+
+## Downloads
+
+Prebuilt Windows x64 packages are published under [GitHub Releases](https://github.com/FlokiTV/cheat-wizard/releases). Each release includes the ZIP package plus a SHA-256 sidecar file. The package also contains `SHA256SUMS.txt` for its individual files.
+
+For the current stable build, use the [latest release](https://github.com/FlokiTV/cheat-wizard/releases/latest). Source builds from `main` are continuously validated by the Windows build/test workflow.
 
 ## Executables and responsibilities
 
@@ -135,6 +146,8 @@ Run tests:
 test-windows.bat
 ```
 
+Tagged releases are automated. Pushing a `v*` tag runs the Windows build/test/smoke gates, packages the x64 release with `scripts/Package-Release.ps1`, generates notes from `CHANGELOG.md`, and publishes the ZIP plus its SHA-256 sidecar to GitHub Releases.
+
 ## Project layout
 
 ```text
@@ -143,6 +156,7 @@ include/cw/          reusable Cheat Wizard algorithms and public headers
 portable_win/        portable no-CRT Windows CLI/GUI/trainer tools
 locales/             external UTF-8 GUI locale JSONs
 cmake/               build helpers, including runtime embedding
+scripts/             release packaging and release-notes automation
 docs/                architecture, GUI, trainer, validation and commands
 tests/               core and mocked Win32 tests
 examples/            example trainer project

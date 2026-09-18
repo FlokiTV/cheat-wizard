@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.0
+## 1.7.0 - 2026-09-17
 
 ### Cheat Wizard rebrand and locales
 
@@ -30,6 +30,12 @@
 
 - Redesigned generated trainer cards with more spacing, explicit live-value/type/consensus status, larger numeric input, Apply and Freeze controls.
 - Added normal input editing semantics to generated trainers: caret positioning, Ctrl+A, arrows, Home/End, Delete/Backspace and double-click select-all.
+
+### Release and CI hardening
+
+- Hardened the custom no-CRT `memcpy`/`memset` routines against recursive optimization under newer MSVC releases; this fixes the `0xC00000FD` Trainer Builder stack overflow seen on GitHub Actions with MSVC 19.51.
+- Added a tag-driven Windows release workflow that builds, tests, runs CLI/Trainer Builder smokes, creates the Windows x64 ZIP, generates SHA-256 checksums and publishes the GitHub Release.
+- Added reusable release packaging and CHANGELOG-to-release-notes scripts so local and GitHub packaging follow the same file contract.
 
 ## 1.6.1
 

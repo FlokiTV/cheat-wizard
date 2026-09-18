@@ -1,6 +1,7 @@
 # Build and IDE output
 build/
 build-*/
+/dist/
 .vs/
 .idea/
 *.user

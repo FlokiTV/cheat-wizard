@@ -1,5 +1,8 @@
 Cheat Wizard v1.7.0 Windows x64
 
+Official releases:
+  https://github.com/FlokiTV/cheat-wizard/releases
+
 Executables:
   cw.exe                  - CLI only: scanner, AOB, pointers, maps and persistence
   cw-gui.exe              - visual Scanner + Pointers + Trainer project editor
