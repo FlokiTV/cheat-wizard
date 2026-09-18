@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$version = $Tag -replace '^v', ''
+$version = ($Tag -replace '^v', '') -replace '-.*$', ''
 $content = Get-Content -LiteralPath $Changelog -Raw
 $escapedVersion = [regex]::Escape($version)
 $pattern = "(?ms)^##\s+v?$escapedVersion(?:\s+-\s+\d{4}-\d{2}-\d{2})?\s*\r?\n(.*?)(?=^##\s+|\z)"

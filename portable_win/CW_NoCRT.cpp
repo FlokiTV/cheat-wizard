@@ -947,7 +947,7 @@ static void cmd_freezes(){bool any=false;for(int i=0;i<MAX_FREEZES;++i){if(!g_fr
 static void cmd_unfreeze(const char* s){if(streq(s,"all")){clear_freezes();println("All freezes removed.");return;}u64 x=0;if(!parse_u64(s,x)||x>=MAX_FREEZES){println("Invalid freeze id.");return;}g_freezes[x].active=0;println("Freeze removed.");}
 
 static void show_help(){
-    println("Cheat Wizard v1.7.0 x64 - scanner + scan sessions + AOB + pointer maps");
+    println("Cheat Wizard v1.7.2 x64 - scanner + scan sessions + AOB + pointer maps");
     println("  processes | ps");println("  attach <pid>");println("  attach-name <exe-name>");println("  detach");
     println("  scan <byte|int16|int32|int64|float|double> <value|unknown>");println("  scan all <value|unknown>");
     println("  next <value> | next exact <value>");println("  next changed | unchanged | increased | decreased");println("  next bigger <value> | smaller <value>");
@@ -977,14 +977,14 @@ static void cmd_status(){
 extern "C" void mainCRTStartup(){
     g_out=GetStdHandle(STD_OUTPUT_HANDLE);g_in=GetStdHandle(STD_INPUT_HANDLE);g_heap=GetProcessHeap();
     DWORD tid=0;HANDLE th=CreateThread(nullptr,0,freeze_thread,nullptr,0,&tid);if(th)CloseHandle(th);
-    println("Cheat Wizard v1.7.0 (Windows x64)");
+    println("Cheat Wizard v1.7.2 (Windows x64)");
     println("Real process scanner with AOB signatures and pointer maps. Type 'help'.");
     char line[2048];char* tok[128];
     for(;;){
         print("cw> ");if(!read_line(line,sizeof(line)))break;int c=tokenize(line,tok,128);if(c==0)continue;
         if(streq(tok[0],"quit")||streq(tok[0],"exit"))break;
         else if(streq(tok[0],"help"))show_help();
-        else if(streq(tok[0],"version"))println("Cheat Wizard v1.7.0 (Windows x64)");
+        else if(streq(tok[0],"version"))println("Cheat Wizard v1.7.2 (Windows x64)");
         else if(streq(tok[0],"processes")||streq(tok[0],"ps"))cmd_processes();
         else if(streq(tok[0],"attach")&&c>=2)cmd_attach(tok[1]);
         else if(streq(tok[0],"attach-name")&&c>=2)cmd_attach_name(tok[1]);

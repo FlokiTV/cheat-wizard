@@ -70,3 +70,32 @@ Current release policy:
 - Security intelligence update is mandatory by default; a failed update or unavailable scanner blocks publication.
 
 The GitHub-hosted `windows-2022` image still evolves over time, so the workflow also asserts the VS2022 `19.4x` compiler family and runs Defender against the actual produced binaries. The release job repeats the Defender gate against the final distributable package.
+
+## v1.7.2 heuristic-hardening candidate
+
+The current local candidate changes the PE shape rather than attempting to suppress Defender behavior:
+
+- official GUI/trainer-runtime/trainer-builder use normal MSVC CRT startup with statically linked `/MT`;
+- `/NODEFAULTLIB` and custom linker entrypoints are removed from official MSVC builds;
+- custom no-CRT `memcpy`/`memset` are excluded from official MSVC builds;
+- `/GS`, Control Flow Guard, CET, ASLR, high-entropy VA and NX are present;
+- all four official PE templates contain conventional `VERSIONINFO` metadata at `1.7.2.0`;
+- generated trainer EXEs preserve VERSIONINFO, Security Cookie, CFG and CET.
+
+Validation on MSVC 19.43.34809.0:
+
+- clean x64 Release build: PASS;
+- CTest: 1/1 PASS;
+- CLI startup/version smoke: PASS;
+- Trainer Builder current + legacy smoke: PASS;
+- GUI startup smoke (2 seconds, managed PID): PASS;
+- generated trainer startup smoke (2 seconds, managed PID): PASS;
+- candidate ZIP SHA-256: `32531d289bcbcd692ef122d0ebf75675845b561aff88512d6e012d0563b0388a`;
+- Defender signatures `1.459.263.0`: individual executables, staged payload and candidate ZIP all `found no threats`.
+
+FastPath limitation:
+
+- the real v1.7.1 browser detection is Defender Operational event 1116 with Origin=`Internet`, Detection Type=`FastPath`, Detection Source=`Downloads e anexos`;
+- copying the known v1.7.1 ZIP and adding Mark-of-the-Web did not reproduce the detection;
+- passing the same known v1.7.1 ZIP through Windows `IAttachmentExecute` completed successfully and also did not reproduce the known browser detection;
+- therefore the only meaningful acceptance gate for the cloud/FastPath issue is a real browser download of the candidate from its final distribution URL.

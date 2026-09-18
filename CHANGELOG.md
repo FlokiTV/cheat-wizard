@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.2 - 2026-09-18
+
+### Windows binary heuristic hardening
+
+- Normalized the official Win32 GUI, trainer runtime and trainer builder from custom `/NODEFAULTLIB` entrypoints to the standard MSVC CRT startup path while keeping the CRT statically linked (`/MT`) so the binaries remain standalone.
+- Restored the normal MSVC stack security cookie (`/GS`) and enabled Control Flow Guard, CET compatibility, ASLR, high-entropy VA and NX compatibility on the official Windows executables.
+- Added conventional Win32 `VERSIONINFO` resources with product/file version, product name, description, original filename and open-source project publisher metadata.
+- Removed the custom `memcpy`/`memset` implementations from official MSVC builds; the historical no-CRT implementations remain only for the legacy cross-build path.
+- Candidate `v1.7.2` passes core tests, CLI smoke, Trainer Builder current/legacy smoke, GUI/generated-trainer startup smoke and Microsoft Defender scans on the individual executables, staged payload and ZIP.
+- Browser-download FastPath remains a separate cloud/reputation path: manual scans, Mark-of-the-Web simulation and `IAttachmentExecute` did not reproduce the known v1.7.1 browser detection, so a real browser download is still required before publishing.
+
 ## 1.7.1 - 2026-09-17
 
 ### Release pipeline hardening

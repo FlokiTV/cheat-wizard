@@ -1,4 +1,4 @@
-Cheat Wizard v1.7.0 Windows x64
+Cheat Wizard v1.7.2 Windows x64
 
 Official releases:
   https://github.com/FlokiTV/cheat-wizard/releases
