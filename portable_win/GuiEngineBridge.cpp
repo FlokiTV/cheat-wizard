@@ -56,44 +56,6 @@ bool regularFileExists(const std::wstring& path) {
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
-bool runEngineBuilder(std::string& error) {
-    const auto builderPath = siblingPath(L"cw-engine-builder.exe");
-    if (!regularFileExists(builderPath)) {
-        error = "cw-engine-builder.exe was not found beside Cheat Wizard";
-        return false;
-    }
-
-    const auto outputDirectory = frontendDirectory();
-    std::wstring command = L"\"" + builderPath + L"\" --output-dir \"" + outputDirectory + L"\"";
-    std::vector<wchar_t> commandLine(command.begin(), command.end());
-    commandLine.push_back(L'\0');
-
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    if (!CreateProcessW(
-            builderPath.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-            nullptr, outputDirectory.c_str(), &startup, &process)) {
-        error = "Could not start cw-engine-builder.exe (Win32 error " + std::to_string(GetLastError()) + ")";
-        return false;
-    }
-    CloseHandle(process.hThread);
-    const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
-    DWORD exitCode = 0;
-    const BOOL gotExitCode = GetExitCodeProcess(process.hProcess, &exitCode);
-    CloseHandle(process.hProcess);
-    if (wait != WAIT_OBJECT_0 || !gotExitCode) {
-        error = "cw-engine-builder.exe did not finish normally";
-        return false;
-    }
-    if (exitCode != 0) {
-        error = "cw-engine-builder.exe exited with code " + std::to_string(exitCode);
-        return false;
-    }
-    error.clear();
-    return true;
-}
-
 std::string wideToUtf8(const std::wstring& value) {
     if (value.empty()) return {};
     const int required = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
@@ -222,29 +184,6 @@ extern "C" void cw_gui_engine_shutdown() {
 
 extern "C" bool cw_gui_engine_exists() {
     return regularFileExists(siblingPath(L"cw-engine.exe"));
-}
-
-extern "C" bool cw_gui_engine_builder_exists() {
-    return regularFileExists(siblingPath(L"cw-engine-builder.exe"));
-}
-
-extern "C" bool cw_gui_engine_build(char* error, std::size_t errorCapacity) {
-    std::lock_guard lock(g_mutex);
-    g_client.shutdown();
-    std::string message;
-    if (!runEngineBuilder(message)) {
-        copyError(message, error, errorCapacity);
-        return false;
-    }
-    if (!g_client.start(message)) {
-        copyError("Engine was built, but could not be started: " + message, error, errorCapacity);
-        return false;
-    }
-    g_scanner.setProcess(nullptr);
-    g_aobScanner.setProcess(nullptr);
-    g_pointerScanner.setProcess(nullptr, 0, {});
-    clearError(error, errorCapacity);
-    return true;
 }
 
 extern "C" bool cw_gui_engine_connected() {

@@ -12,6 +12,14 @@
 - The GUI/engine split remains enforced: `cw-gui.exe` is a frontend over the local Named Pipe engine boundary and the build gate prevents direct live-process memory/toolhelp imports from being reintroduced.
 - Browser/FastPath detections are still treated as release-validation failures. The project does not instruct users to disable Defender, add exclusions or whitelist flagged artifacts.
 
+### RC4 follow-up fixes
+
+- Confirmed a normal browser download of `v1.7.3-rc4` completed successfully with Microsoft Defender active in the reported test environment; this is a positive FastPath/reputation result for that environment, not a universal reputation guarantee.
+- Removed the remaining end-user GUI dependency on the legacy `cw-engine-builder.exe`. The footer now reports the state of `cw-engine.exe` only; missing/unavailable engines direct users back to `Cheat-Wizard-Builder.exe`.
+- Fixed clipping of the **Cheat Wizard** brand in the top bar by reserving enough width and shifting the navigation layout.
+- Restored the historical GUI semantics for Exact Float scans by removing the implicit `0.00001` tolerance introduced during the IPC migration. Exact Float now uses zero tolerance unless another frontend explicitly configures one.
+- Added an explicit warning when the scan result limit is reached, plus an Exact Float RPC regression test. Release CI now reruns the process/scan RPC suite against the `cw-engine.exe` actually produced by the standalone Product Builder.
+
 ## 1.7.2 - 2026-09-18
 
 ### Windows binary heuristic hardening

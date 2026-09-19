@@ -339,6 +339,7 @@ static u64 g_snapshotBytes = 0;
 static usize g_snapshotCandidates = 0;
 static usize g_snapshotTypeCounts[6] = {};
 static bool g_snapshotActive = false;
+static bool g_uiScanTruncated = false;
 static uptr* g_aobResults = nullptr;
 static usize g_aobCount = 0;
 static usize g_aobCap = 0;
@@ -407,7 +408,7 @@ static bool parse_aob_token(const char* in,u8& value,u8& mask){if(!in||!*in)retu
 static bool aob_match(const u8* p,const u8* values,const u8* masks,usize count){for(usize i=0;i<count;++i)if((p[i]&masks[i])!=(values[i]&masks[i]))return false;return true;}
 static void clear_snapshot(){
     for(usize i=0;i<g_snapshotCount;++i){for(int ti=0;ti<6;++ti)if(g_snapshotBlocks[i].masks[ti])HeapFree(g_heap,0,g_snapshotBlocks[i].masks[ti]);memzero(&g_snapshotBlocks[i],sizeof(SnapshotBlock_));}
-    if(g_snapshotFile&&(uptr)g_snapshotFile!=INVALID_HANDLE_BITS)CloseHandle(g_snapshotFile);g_snapshotFile=nullptr;g_snapshotCount=0;g_snapshotBytes=0;g_snapshotCandidates=0;memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));g_snapshotActive=false;
+    if(g_snapshotFile&&(uptr)g_snapshotFile!=INVALID_HANDLE_BITS)CloseHandle(g_snapshotFile);g_snapshotFile=nullptr;g_snapshotCount=0;g_snapshotBytes=0;g_snapshotCandidates=0;memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));g_snapshotActive=false;g_uiScanTruncated=false;
 }
 static void refresh_snapshot_type_counts(){memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));g_snapshotCandidates=0;usize max=(usize)-1;for(usize bi=0;bi<g_snapshotCount;++bi){for(int ti=0;ti<6;++ti){usize c=g_snapshotBlocks[bi].activeCounts[ti];if(c>max-g_snapshotTypeCounts[ti])g_snapshotTypeCounts[ti]=max;else g_snapshotTypeCounts[ti]+=c;if(c>max-g_snapshotCandidates)g_snapshotCandidates=max;else g_snapshotCandidates+=c;}}}
 static void refresh_result_type_counts(){memzero(g_resultTypeCounts,sizeof(g_resultTypeCounts));for(usize i=0;i<g_resultCount;++i){int ti=value_type_index((ValueType)g_results[i].type);if(ti>=0)++g_resultTypeCounts[ti];}}
@@ -627,7 +628,7 @@ static constexpr UINT WM_LBUTTONDBLCLK_ = 0x0203;
 static constexpr UINT WM_MOUSEWHEEL_ = 0x020A;
 static constexpr UINT WM_APP_SCAN_DONE_ = 0x8001;
 static constexpr UINT WM_APP_POINTER_DONE_ = 0x8002;
-static constexpr UINT WM_APP_ENGINE_BUILD_DONE_ = 0x8003;
+// Engine rebuilds are handled by Cheat-Wizard-Builder.exe, outside the GUI.
 static constexpr UINT MB_OK_ = 0x00000000;
 static constexpr UINT MB_ICONERROR_ = 0x00000010;
 static constexpr UINT DT_LEFT_ = 0x00000000;
@@ -757,7 +758,7 @@ struct UiLayout_ {
     UiRect trainerColorMuted;
     UiRect trainerPreview;
     UiRect footer;
-    UiRect engineBuild;
+    UiRect engineStatus;
     UiRect locale;
 };
 static UiLayout_ g_ui{};
@@ -789,9 +790,8 @@ static HPEN g_penGreen = nullptr;
 
 static volatile LONG g_uiBusy = 0;
 static bool g_uiEngineReady = false;
-static bool g_uiEngineBuilderAvailable = false;
 static bool g_uiEngineFilePresent = false;
-static char g_uiEngineBuildError[256] = {};
+
 static constexpr usize UI_RESULT_RENDER_LIMIT = 5000;
 static constexpr usize UI_WATCH_LIMIT = 256;
 static constexpr int UI_WATCH_ROW_H = 38;
@@ -918,19 +918,19 @@ static const UiLocaleDef_ g_uiLocaleDefs[] = {
     {"header.refresh", "Refresh"},
     {"header.attach", "Attach"},
     {"header.attached", "Attached"},
-    {"engine.build", "Build Engine"},
-    {"engine.building", "Building..."},
+    {"engine.missing", "Engine missing"},
+    {"engine.unavailable", "Engine unavailable"},
     {"engine.ready", "Engine ready"},
-    {"engine.builderMissing", "Builder missing"},
+
     {"status.ready", "Ready. Select a process to begin."},
-    {"status.engineNotBuilt", "Local engine is not built. Click Build Engine."},
-    {"status.engineUnavailable", "Local engine could not start. Rebuild it with Build Engine."},
-    {"status.engineBuilderMissing", "cw-engine-builder.exe is missing beside Cheat Wizard."},
-    {"status.engineBuilding", "Building the local engine... This can take about a minute."},
-    {"status.engineBuildDone", "Local engine built and started successfully."},
-    {"status.engineBuildFailed", "Local engine build failed."},
-    {"status.engineBuildThreadFailed", "Could not start the engine build worker."},
-    {"status.closeEngineBuildBusy", "Wait for the local engine build to finish before closing Cheat Wizard."},
+    {"status.engineMissing", "cw-engine.exe is missing. Run Cheat-Wizard-Builder.exe again to rebuild the application."},
+    {"status.engineUnavailable", "Local engine could not start. Run Cheat-Wizard-Builder.exe again to repair the application."},
+
+
+
+
+
+
     {"status.localeChanged", "Language changed."},
     {"status.localeFallback", "Locale file unavailable or invalid. Compiled English fallback is active."},
     {"status.processEnumFailed", "Could not enumerate processes."},
@@ -1230,6 +1230,7 @@ static const UiLocaleDef_ g_uiLocaleDefs[] = {
     {"status.unknownReadySuffix", " MiB temporary. Use the Wizard."},
     {"status.scanDonePrefix", "Scan complete: "},
     {"status.scanDoneSuffix", " results."},
+    {"status.scanTruncatedSuffix", " Result limit reached; use a more specific value/type before continuing."},
     {"status.scanFailed", "The scan failed. Check process, type, value, and temporary disk space."},
     {"status.closePointerBusy", "Cancel or wait for the pointer scan to finish before closing."},
     {"status.closeScanBusy", "Wait for the scan to finish before closing Cheat Wizard."},
@@ -1411,9 +1412,9 @@ static void ui_compute_layout(){
     const int m=18,gap=14,headerH=72,footerH=32;int bodyY=m+headerH+gap;int bodyBottom=h-m-footerH-gap;int bodyH=ui_maxi(500,bodyBottom-bodyY);
     int leftW=ui_clampi(w/4,300,340);int rightX=m+leftW+gap;int rightW=ui_maxi(620,w-m-rightX);
     g_ui.header={m,m,w-2*m,headerH};
-    int tabW=92;g_ui.tabScanner={m+146,m+18,tabW,36};g_ui.tabPointers={m+146+tabW+8,m+18,tabW,36};g_ui.tabTrainer={m+146+(tabW+8)*2,m+18,tabW,36};
+    const int brandW=160,tabW=92,navX=m+18+brandW+10;g_ui.tabScanner={navX,m+18,tabW,36};g_ui.tabPointers={navX+tabW+8,m+18,tabW,36};g_ui.tabTrainer={navX+(tabW+8)*2,m+18,tabW,36};
     int attachW=116,refreshW=120;g_ui.attach={w-m-attachW-14,m+18,attachW,36};g_ui.refresh={g_ui.attach.x-gap-refreshW,m+18,refreshW,36};
-    int targetX=g_ui.tabTrainer.x+g_ui.tabTrainer.w+14;g_ui.target={targetX,m+16,ui_maxi(240,g_ui.refresh.x-gap-targetX),40};
+    int targetX=g_ui.tabTrainer.x+g_ui.tabTrainer.w+14;g_ui.target={targetX,m+16,ui_maxi(220,g_ui.refresh.x-gap-targetX),40};
     g_ui.scanCard={m,bodyY,leftW,bodyH};
     int sx=m+18,sw=leftW-36;int sy=bodyY+82;bool activeScan=ui_scan_active();bool unknownFlow=ui_unknown_flow_active();bool needsValue=ui_scan_value_visible();
     g_ui.scanValueBox={};g_ui.scanType={};g_ui.valueType={};g_ui.scanSummary={};g_ui.scanStats={};g_ui.scanHint={};g_ui.alignment={};g_ui.firstScan={};g_ui.nextScan={};g_ui.newScan={};g_ui.guideChanged={};g_ui.guideUnchanged={};g_ui.guideIncreased={};g_ui.guideDecreased={};g_ui.wizardGoal={};
@@ -1452,7 +1453,7 @@ static void ui_compute_layout(){
     int ty=ey+46;int actionGap=8;int trainerActionW=(rightW-32-actionGap*2)/3;g_ui.trainerShowToggle={rightX+16,ty,trainerActionW,34};g_ui.trainerWriteToggle={rightX+16+trainerActionW+actionGap,ty,trainerActionW,34};g_ui.trainerFreezeToggle={rightX+16+(trainerActionW+actionGap)*2,ty,trainerActionW,34};
     int my=ty+42;int moveW=(rightW-32-actionGap*2)/3;g_ui.trainerMoveUp={rightX+16,my,moveW,34};g_ui.trainerMoveDown={rightX+16+moveW+actionGap,my,moveW,34};g_ui.trainerRemove={rightX+16+(moveW+actionGap)*2,my,moveW,34};
     g_ui.trainerIconButton={tx,bodyY+126,tw,38};g_ui.trainerIconConvert={tx,bodyY+172,tw,38};int colorGap=10,colorW=(tw-colorGap)/2;g_ui.trainerColorBg={tx,bodyY+234,colorW,36};g_ui.trainerColorPanel={tx+colorW+colorGap,bodyY+234,colorW,36};g_ui.trainerColorSurface={tx,bodyY+302,colorW,36};g_ui.trainerColorAccent={tx+colorW+colorGap,bodyY+302,colorW,36};g_ui.trainerColorText={tx,bodyY+370,colorW,36};g_ui.trainerColorMuted={tx+colorW+colorGap,bodyY+370,colorW,36};g_ui.trainerPreview={rightX+16,bodyY+68,rightW-32,bodyH-86};
-    g_ui.footer={m,h-m-footerH,w-2*m,footerH};g_ui.locale={g_ui.footer.x+g_ui.footer.w-94,g_ui.footer.y+3,84,g_ui.footer.h-6};g_ui.engineBuild={g_ui.locale.x-146,g_ui.footer.y+3,138,g_ui.footer.h-6};
+    g_ui.footer={m,h-m-footerH,w-2*m,footerH};g_ui.locale={g_ui.footer.x+g_ui.footer.w-94,g_ui.footer.y+3,84,g_ui.footer.h-6};g_ui.engineStatus={g_ui.locale.x-146,g_ui.footer.y+3,138,g_ui.footer.h-6};
 }
 static void ui_sync_edits(){
     // v1.7.2 uses fully custom drawn text fields. There are no child EDIT
@@ -1612,7 +1613,20 @@ static void ui_process_popup_geometry(UiRect& base,UiRect& search,UiRect& list,U
 static void ui_refresh_processes(){
     DWORD keepPid=(g_uiProcessSelected>=0&&g_uiProcessSelected<g_uiProcessCount)?g_uiProcesses[g_uiProcessSelected].pid:0;
     g_uiProcessCount=0;g_uiProcessSelected=-1;
-    char engineError[256]{};if(!cw_gui_engine_connected()){if(!cw_gui_engine_exists()){g_uiEngineReady=false;g_uiEngineFilePresent=false;ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineNotBuilt"):ui_tr("status.engineBuilderMissing"),2);return;}if(!cw_gui_engine_start(engineError,sizeof(engineError))){g_uiEngineReady=false;g_uiEngineFilePresent=true;ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineUnavailable"):(engineError[0]?engineError:ui_tr("status.processEnumFailed")),3);return;}g_uiEngineReady=true;g_uiEngineFilePresent=true;}
+    char engineError[256]{};
+    if(!cw_gui_engine_connected()){
+        if(!cw_gui_engine_exists()){
+            g_uiEngineReady=false;g_uiEngineFilePresent=false;
+            ui_set_status(ui_tr("status.engineMissing"),3);
+            return;
+        }
+        if(!cw_gui_engine_start(engineError,sizeof(engineError))){
+            g_uiEngineReady=false;g_uiEngineFilePresent=true;
+            ui_set_status(engineError[0]?engineError:ui_tr("status.engineUnavailable"),3);
+            return;
+        }
+        g_uiEngineReady=true;g_uiEngineFilePresent=true;
+    }
     CwGuiProcessInfo* remote=(CwGuiProcessInfo*)HeapAlloc(g_heap,0,UI_PROCESS_LIMIT*sizeof(CwGuiProcessInfo));if(!remote){ui_set_status(ui_tr("status.processEnumFailed"),3);return;}
     u32 remoteCount=0;if(!cw_gui_engine_list_processes(remote,(u32)UI_PROCESS_LIMIT,&remoteCount,engineError,sizeof(engineError))){HeapFree(g_heap,0,remote);ui_set_status(engineError[0]?engineError:ui_tr("status.processEnumFailed"),3);return;}
     for(u32 i=0;i<remoteCount&&g_uiProcessCount<(int)UI_PROCESS_LIMIT;++i){if(!remote[i].pid)continue;UiProcess_& p=g_uiProcesses[g_uiProcessCount++];p.pid=(DWORD)remote[i].pid;strcopy(p.name,sizeof(p.name),remote[i].name);}
@@ -1672,6 +1686,7 @@ static bool ui_sync_scan_from_engine(const CwGuiScanSummary& summary){
     clear_results();clear_snapshot();
     g_type=summary.mixed?ValueType::Mixed:(summary.primaryType<=5?(ValueType)summary.primaryType:ValueType::Invalid);
     g_snapshotActive=summary.snapshotActive!=0;
+    g_uiScanTruncated=summary.truncated!=0;
     g_snapshotCandidates=(usize)summary.candidateCount;
     g_snapshotBytes=(usize)summary.bytesRead;
     memzero(g_snapshotTypeCounts,sizeof(g_snapshotTypeCounts));
@@ -1708,7 +1723,7 @@ static DWORD __stdcall ui_scan_worker(LPVOID){
     bool ok=true;CwGuiScanSummary summary{};char engineError[256]{};
     if(g_uiTask.kind==1){
         guided_reset();
-        CwGuiScanOptions options{};options.alignmentByte=g_alignmentByte?1:0;options.minAddress=0;options.maxAddress=~(u64)0;options.floatTolerance=0.00001;
+        CwGuiScanOptions options{};options.alignmentByte=g_alignmentByte?1:0;options.minAddress=0;options.maxAddress=~(u64)0;options.floatTolerance=0.0;
         u8 kind=g_uiTask.scanType==0?0:(g_uiTask.scanType==1?1:(g_uiTask.scanType==8?2:255));
         if(kind==255)ok=false;
         else ok=cw_gui_engine_scan_first(kind,(u8)g_uiTask.type,g_uiTask.value,&options,&summary,engineError,sizeof(engineError));
@@ -1742,13 +1757,12 @@ static HBRUSH g_brushError = nullptr;
 static HBRUSH g_brushAccentSoft = nullptr;
 
 static bool ui_selected_is_attached(){return g_process&&g_uiProcessSelected>=0&&g_uiProcessSelected<g_uiProcessCount&&g_uiProcesses[g_uiProcessSelected].pid==g_pid;}
-static DWORD __stdcall ui_engine_build_worker(LPVOID){char engineError[256]{};bool ok=cw_gui_engine_build(engineError,sizeof(engineError));strcopy(g_uiEngineBuildError,sizeof(g_uiEngineBuildError),engineError);PostMessageA(g_hwnd,WM_APP_ENGINE_BUILD_DONE_,ok?1:0,0);return 0;}
-static void ui_start_engine_build(){if(g_uiBusy)return;if(!g_uiEngineBuilderAvailable){ui_set_status(ui_tr("status.engineBuilderMissing"),3);return;}g_uiBusy=3;g_uiEngineBuildError[0]=0;g_uiPopup=UI_POP_NONE;ui_set_status(ui_tr("status.engineBuilding"),0);InvalidateRect(g_hwnd,nullptr,0);DWORD tid=0;HANDLE th=CreateThread(nullptr,0,ui_engine_build_worker,nullptr,0,&tid);if(!th){g_uiBusy=0;ui_set_status(ui_tr("status.engineBuildThreadFailed"),3);}else CloseHandle(th);}
+
 static void ui_tab(HDC dc,const UiRect& r,const char* label,bool active,bool enabled){
     HBRUSH br=active?g_brushSelected:(ui_hover(r)&&enabled?g_brushHover:g_brushPanel);ui_round(dc,r,br,active?g_penAccent:g_penBorder,8);ui_text(dc,label,r,enabled?(active?Z50:Z300):Z600,g_fontBold,DT_CENTER_|DT_VCENTER_|DT_SINGLELINE_);
 }
 static void ui_draw_header2(HDC dc){
-    ui_round(dc,g_ui.header,g_brushPanel,g_penBorder,12);UiRect brand{g_ui.header.x+18,g_ui.header.y+10,120,28};ui_text(dc,ui_tr("app.name"),brand,Z50,g_fontTitle,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_);UiRect sub{g_ui.header.x+18,g_ui.header.y+39,120,20};ui_text(dc,ui_tr("app.tagline"),sub,Z500,g_fontSmall,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_);
+    ui_round(dc,g_ui.header,g_brushPanel,g_penBorder,12);UiRect brand{g_ui.header.x+18,g_ui.header.y+10,160,28};ui_text(dc,ui_tr("app.name"),brand,Z50,g_fontTitle,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_);UiRect sub{g_ui.header.x+18,g_ui.header.y+39,160,20};ui_text(dc,ui_tr("app.tagline"),sub,Z500,g_fontSmall,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_);
     ui_tab(dc,g_ui.tabScanner,ui_tr("nav.scanner"),g_uiView==UI_VIEW_SCANNER,!g_uiBusy);ui_tab(dc,g_ui.tabPointers,ui_tr("nav.pointers"),g_uiView==UI_VIEW_POINTERS,!g_uiBusy);ui_tab(dc,g_ui.tabTrainer,ui_tr("nav.trainer"),g_uiView==UI_VIEW_TRAINER,!g_uiBusy);
     char target[420]{};if(g_uiProcessSelected>=0&&g_uiProcessSelected<g_uiProcessCount){usize n=0;append_str(target,sizeof(target),n,g_uiProcesses[g_uiProcessSelected].name);append_str(target,sizeof(target),n,"   PID ");append_u64_dec(target,sizeof(target),n,g_uiProcesses[g_uiProcessSelected].pid);target[n]=0;}else strcopy(target,sizeof(target),ui_tr("header.selectProcess"));ui_field(dc,g_ui.target,target,g_uiPopup==UI_POP_PROCESS,!g_uiBusy);
     if(g_process){UiRect dot{g_ui.target.x+g_ui.target.w-48,g_ui.target.y+16,8,8};ui_round(dc,dot,ui_selected_is_attached()?g_brushSuccess:g_brushWarn,nullptr,8);}
@@ -2034,7 +2048,20 @@ static void ui_draw_pointer_results(HDC dc){
     int widths[6]{};ui_pointer_column_widths(widths);for(int r=0;r<visible;++r){int idx=g_uiPointerScroll+r;if(idx>=total)break;UiRect row{g_ui.pointerTable.x,bodyY+r*rowH,g_ui.pointerTable.w-8,rowH-1};bool sel=g_uiSelectedPointer==idx;bool hov=ui_contains(row,g_uiMouseX,g_uiMouseY);if(sel)ui_round(dc,row,g_brushSelected,nullptr,5);else if(hov)ui_round(dc,row,g_brushHover,nullptr,5);char ix[32]{},base[320]{},offs[520]{},resolved[64]{},value[96]{},state[48]{};usize n=0;append_char(ix,sizeof(ix),n,'#');append_u64_dec(ix,sizeof(ix),n,(u64)idx);ix[n]=0;bool match=false,rd=false;ui_pointer_chain_text((usize)idx,base,offs,resolved,value,state,match,rd);const char* vals[6]={ix,base,offs,resolved,value,state};int x=row.x+10;for(int c=0;c<6;++c){COLORREF col=c==0?Z500:(c==5?(match?GREEN400:(rd?Z300:AMBER400)):(c==4?BLUE300:(c==2?Z400:Z200)));HFONT f=(c==1||c==2||c==3||c==4)?g_fontMono:g_fontSmall;ui_text(dc,vals[c],{x,row.y,widths[c]-6,row.h},col,f,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_|DT_END_ELLIPSIS_);x+=widths[c];}}
     ui_draw_scrollbar(dc,g_ui.pointerTable,total,g_uiPointerScroll,visible);
 }
-static void ui_draw_footer(HDC dc){ui_round(dc,g_ui.footer,g_brushPanel,nullptr,8);COLORREF c=g_uiStatusKind==1?GREEN400:(g_uiStatusKind==2?AMBER400:(g_uiStatusKind==3?RED400:Z500));UiRect dot{g_ui.footer.x+12,g_ui.footer.y+12,8,8};HBRUSH br=g_uiStatusKind==1?g_brushSuccess:(g_uiStatusKind==2?g_brushWarn:(g_uiStatusKind==3?g_brushError:g_brushSelected));ui_round(dc,dot,br,nullptr,8);UiRect t{g_ui.footer.x+28,g_ui.footer.y,ui_maxi(40,g_ui.engineBuild.x-g_ui.footer.x-38),g_ui.footer.h};ui_text(dc,g_uiStatus,t,c,g_fontSmall,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_|DT_END_ELLIPSIS_);const char* engineLabel=g_uiBusy==3?ui_tr("engine.building"):(g_uiEngineReady?ui_tr("engine.ready"):(g_uiEngineBuilderAvailable?ui_tr("engine.build"):ui_tr("engine.builderMissing")));ui_button(dc,g_ui.engineBuild,engineLabel,g_uiEngineReady,!g_uiBusy&&!g_uiEngineReady&&g_uiEngineBuilderAvailable);const char* code=(g_uiLocaleIndex>=0&&g_uiLocaleIndex<g_uiLocaleChoiceCount)?g_uiLocaleChoices[g_uiLocaleIndex].code:"en-US";ui_button(dc,g_ui.locale,code,false,g_uiBusy!=3);}
+static void ui_draw_footer(HDC dc){
+    ui_round(dc,g_ui.footer,g_brushPanel,nullptr,8);
+    COLORREF c=g_uiStatusKind==1?GREEN400:(g_uiStatusKind==2?AMBER400:(g_uiStatusKind==3?RED400:Z500));
+    UiRect dot{g_ui.footer.x+12,g_ui.footer.y+12,8,8};
+    HBRUSH br=g_uiStatusKind==1?g_brushSuccess:(g_uiStatusKind==2?g_brushWarn:(g_uiStatusKind==3?g_brushError:g_brushSelected));
+    ui_round(dc,dot,br,nullptr,8);
+    UiRect t{g_ui.footer.x+28,g_ui.footer.y,ui_maxi(40,g_ui.engineStatus.x-g_ui.footer.x-38),g_ui.footer.h};
+    ui_text(dc,g_uiStatus,t,c,g_fontSmall,DT_LEFT_|DT_VCENTER_|DT_SINGLELINE_|DT_END_ELLIPSIS_);
+    const char* engineLabel=g_uiEngineReady?ui_tr("engine.ready"):(g_uiEngineFilePresent?ui_tr("engine.unavailable"):ui_tr("engine.missing"));
+    COLORREF engineColor=g_uiEngineReady?GREEN400:(g_uiEngineFilePresent?AMBER400:RED400);
+    ui_badge(dc,g_ui.engineStatus.x,g_ui.engineStatus.y+1,engineLabel,engineColor,g_brushSurface,g_ui.engineStatus.w);
+    const char* code=(g_uiLocaleIndex>=0&&g_uiLocaleIndex<g_uiLocaleChoiceCount)?g_uiLocaleChoices[g_uiLocaleIndex].code:"en-US";
+    ui_button(dc,g_ui.locale,code,false,!g_uiBusy);
+}
 
 static void ui_draw_popup(HDC dc){
     if(g_uiPopup==UI_POP_NONE)return;
@@ -2078,8 +2105,8 @@ static bool ui_watch_row_rect_for_slot(int slot,UiRect& row){int logical=ui_watc
 
 static void ui_click(int x,int y){
     if(ui_popup_click(x,y))return;
-    if(ui_contains(g_ui.locale,x,y)&&g_uiLocaleChoiceCount>0&&g_uiBusy!=3){int next=(g_uiLocaleIndex+1)%g_uiLocaleChoiceCount;ui_select_locale(next,true,true);return;}
-    if(!g_uiBusy&&ui_contains(g_ui.engineBuild,x,y)){ui_start_engine_build();return;}
+    if(ui_contains(g_ui.locale,x,y)&&g_uiLocaleChoiceCount>0&&!g_uiBusy){int next=(g_uiLocaleIndex+1)%g_uiLocaleChoiceCount;ui_select_locale(next,true,true);return;}
+
     if(!g_uiBusy){if(ui_contains(g_ui.tabScanner,x,y)){g_uiView=UI_VIEW_SCANNER;g_uiPopup=UI_POP_NONE;InvalidateRect(g_hwnd,nullptr,0);return;}if(ui_contains(g_ui.tabPointers,x,y)){g_uiView=UI_VIEW_POINTERS;g_uiPopup=UI_POP_NONE;InvalidateRect(g_hwnd,nullptr,0);return;}if(ui_contains(g_ui.tabTrainer,x,y)){g_uiView=UI_VIEW_TRAINER;g_uiPopup=UI_POP_NONE;InvalidateRect(g_hwnd,nullptr,0);return;}}
     if(g_uiBusy){if(g_uiBusy==2&&g_uiView==UI_VIEW_POINTERS&&ui_contains(g_ui.pointerCancel,x,y)){g_pointerCancelRequested=1;ui_set_status(ui_tr("pointers.cancelRequested"),2);}return;}
     if(ui_contains(g_ui.target,x,y)){ui_set_popup(UI_POP_PROCESS);return;}if(ui_contains(g_ui.refresh,x,y)){ui_refresh_processes();return;}if(ui_contains(g_ui.attach,x,y)){if(!ui_selected_is_attached())ui_attach_selected();return;}
@@ -2146,7 +2173,22 @@ static void ui_create_controls(){
 static void ui_try_dark_titlebar(HWND hwnd){HINSTANCE dwm=LoadLibraryA("dwmapi.dll");if(!dwm)return;using Fn=int (__stdcall *)(HWND,DWORD,LPCVOID,DWORD);auto fn=(Fn)GetProcAddress(dwm,"DwmSetWindowAttribute");if(!fn)return;BOOL dark=1;fn(hwnd,20,&dark,(DWORD)sizeof(dark));fn(hwnd,19,&dark,(DWORD)sizeof(dark));}
 
 static LRESULT __stdcall ui_wndproc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam){
-    if(msg==WM_CREATE_){g_hwnd=hwnd;ui_create_controls();g_uiEngineBuilderAvailable=cw_gui_engine_builder_exists();g_uiEngineFilePresent=cw_gui_engine_exists();g_uiEngineReady=false;if(g_uiEngineFilePresent){char engineError[256]{};if(cw_gui_engine_start(engineError,sizeof(engineError)))g_uiEngineReady=true;else ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineUnavailable"):(engineError[0]?engineError:ui_tr("status.engineBuilderMissing")),3);}else ui_set_status(g_uiEngineBuilderAvailable?ui_tr("status.engineNotBuilt"):ui_tr("status.engineBuilderMissing"),g_uiEngineBuilderAvailable?2:3);SetTimer(hwnd,1,1000,nullptr);return 0;}
+    if(msg==WM_CREATE_){
+        g_hwnd=hwnd;ui_create_controls();
+        g_uiEngineFilePresent=cw_gui_engine_exists();g_uiEngineReady=false;
+        if(g_uiEngineFilePresent){
+            char engineError[256]{};
+            if(cw_gui_engine_start(engineError,sizeof(engineError))){
+                g_uiEngineReady=true;
+                ui_set_status(ui_tr("status.ready"),0);
+            }else{
+                ui_set_status(ui_tr("status.engineUnavailable"),3);
+            }
+        }else{
+            ui_set_status(ui_tr("status.engineMissing"),3);
+        }
+        SetTimer(hwnd,1,1000,nullptr);return 0;
+    }
     if(msg==WM_GETMINMAXINFO_){MINMAXINFO_* mm=(MINMAXINFO_*)lParam;if(mm){mm->ptMinTrackSize.x=1024;mm->ptMinTrackSize.y=720;}return 0;}
     if(msg==WM_SIZE_){ui_compute_layout();ui_sync_edits();InvalidateRect(hwnd,nullptr,0);return 0;}
     if(msg==WM_ERASEBKGND_)return 1;
@@ -2171,12 +2213,12 @@ static LRESULT __stdcall ui_wndproc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lPar
             }
         }return 0;}
     if(msg==WM_MOUSEWHEEL_){POINT_ p{(short)(lParam&0xFFFF),(short)((lParam>>16)&0xFFFF)};ScreenToClient(hwnd,&p);short d=(short)((wParam>>16)&0xFFFF);ui_scroll((int)d,(int)p.x,(int)p.y);return 0;}
-    if(msg==WM_TIMER_){if(!g_uiBusy&&g_uiView==UI_VIEW_POINTERS)ui_pointer_refresh_visible_cache();if(!g_uiBusy||g_uiBusy==2||g_uiBusy==3)InvalidateRect(hwnd,nullptr,0);return 0;}
-    if(msg==WM_APP_SCAN_DONE_){g_uiBusy=0;if(g_uiTask.kind==1){if(wParam)g_uiScanType=g_uiUnknownFlow?ui_scan_type_from_next_mode(guided_recommended_mode()):0;else{g_uiUnknownFlow=false;g_uiUnknownInitialMode=0;g_uiScanType=0;}}if(!g_snapshotActive&&g_resultCount)g_uiSelectedResult=(g_rankingEnabled&&g_rankedCount&&!g_rankingDirty)?(int)g_rankedIndices[0]:0;else g_uiSelectedResult=-1;g_uiResultScroll=0;ui_sync_edits();if(wParam){char b[260];usize n=0;if(g_snapshotActive){append_str(b,sizeof(b),n,ui_tr("status.unknownReadyPrefix"));ui_append_compact_count(b,sizeof(b),n,g_snapshotCandidates);append_str(b,sizeof(b),n,ui_tr("status.unknownReadyMiddle"));append_u64_dec(b,sizeof(b),n,g_snapshotBytes/(1024*1024));append_str(b,sizeof(b),n,ui_tr("status.unknownReadySuffix"));}else{append_str(b,sizeof(b),n,ui_tr("status.scanDonePrefix"));ui_append_compact_count(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n,ui_tr("status.scanDoneSuffix"));}b[n]=0;ui_set_status(b,1);}else ui_set_status(ui_tr("status.scanFailed"),3);InvalidateRect(hwnd,nullptr,0);return 0;}
-    if(msg==WM_APP_ENGINE_BUILD_DONE_){g_uiBusy=0;g_uiEngineBuilderAvailable=cw_gui_engine_builder_exists();g_uiEngineFilePresent=cw_gui_engine_exists();if(wParam){g_uiEngineReady=true;ui_refresh_processes();ui_set_status(ui_tr("status.engineBuildDone"),1);}else{g_uiEngineReady=false;ui_set_status(g_uiEngineBuildError[0]?g_uiEngineBuildError:ui_tr("status.engineBuildFailed"),3);}InvalidateRect(hwnd,nullptr,0);return 0;}
+    if(msg==WM_TIMER_){if(!g_uiBusy&&g_uiView==UI_VIEW_POINTERS)ui_pointer_refresh_visible_cache();if(!g_uiBusy||g_uiBusy==2)InvalidateRect(hwnd,nullptr,0);return 0;}
+    if(msg==WM_APP_SCAN_DONE_){g_uiBusy=0;if(g_uiTask.kind==1){if(wParam)g_uiScanType=g_uiUnknownFlow?ui_scan_type_from_next_mode(guided_recommended_mode()):0;else{g_uiUnknownFlow=false;g_uiUnknownInitialMode=0;g_uiScanType=0;}}if(!g_snapshotActive&&g_resultCount)g_uiSelectedResult=(g_rankingEnabled&&g_rankedCount&&!g_rankingDirty)?(int)g_rankedIndices[0]:0;else g_uiSelectedResult=-1;g_uiResultScroll=0;ui_sync_edits();if(wParam){char b[260];usize n=0;if(g_snapshotActive){append_str(b,sizeof(b),n,ui_tr("status.unknownReadyPrefix"));ui_append_compact_count(b,sizeof(b),n,g_snapshotCandidates);append_str(b,sizeof(b),n,ui_tr("status.unknownReadyMiddle"));append_u64_dec(b,sizeof(b),n,g_snapshotBytes/(1024*1024));append_str(b,sizeof(b),n,ui_tr("status.unknownReadySuffix"));}else{append_str(b,sizeof(b),n,ui_tr("status.scanDonePrefix"));ui_append_compact_count(b,sizeof(b),n,g_resultCount);append_str(b,sizeof(b),n,ui_tr("status.scanDoneSuffix"));}if(g_uiScanTruncated)append_str(b,sizeof(b),n,ui_tr("status.scanTruncatedSuffix"));b[n]=0;ui_set_status(b,g_uiScanTruncated?2:1);}else ui_set_status(ui_tr("status.scanFailed"),3);InvalidateRect(hwnd,nullptr,0);return 0;}
+
     if(msg==WM_APP_POINTER_DONE_){int kind=(int)lParam;g_uiBusy=0;g_uiPointerPhase=0;g_pointerCancelRequested=0;g_uiSelectedPointer=g_pointerChainCount?0:-1;g_uiPointerScroll=0;ui_pointer_reset_cache();ui_pointer_refresh_visible_cache();if(wParam==2){ui_set_status(ui_tr("pointers.cancelled"),2);}else if(!wParam){ui_set_status(kind==4?ui_tr("pointers.rescanFailed"):ui_tr("pointers.scanFailed"),3);}else{char b[300];usize n=0;if(kind==4){append_str(b,sizeof(b),n,ui_tr("pointers.rescanDonePrefix"));append_u64_dec(b,sizeof(b),n,g_uiPointerBefore);append_str(b,sizeof(b),n," -> ");append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n,ui_tr("pointers.stableChainsSuffix"));}else{append_str(b,sizeof(b),n,ui_tr("pointers.scanDonePrefix"));append_u64_dec(b,sizeof(b),n,g_pointerChainCount);append_str(b,sizeof(b),n,ui_tr("pointers.chainsSuffix"));if(g_uiPointerTargetedUsed){append_str(b,sizeof(b),n,ui_tr("pointers.targetedLevel"));append_u64_dec(b,sizeof(b),n,g_pointerLayerDepth);append_str(b,sizeof(b),n,ui_tr("pointers.matches"));append_u64_dec(b,sizeof(b),n,g_pointerLayerMatches);if(g_pointerLayerTruncated)append_str(b,sizeof(b),n,ui_tr("pointers.frontierLimited"));}else{append_str(b,sizeof(b),n,ui_tr("pointers.indexPrefix"));append_u64_dec(b,sizeof(b),n,g_uiPointerIndexed);if(g_uiPointerIndexTruncated)append_str(b,sizeof(b),n,ui_tr("pointers.partial"));append_str(b,sizeof(b),n,ui_tr("pointers.targetParents"));append_u64_dec(b,sizeof(b),n,g_uiPointerLevel1Candidates);if(g_uiPointerSearchBudgetHit)append_str(b,sizeof(b),n,ui_tr("pointers.budgetHit"));else if(g_uiPointerSearchTruncated)append_str(b,sizeof(b),n,ui_tr("pointers.searchLimited"));}if(g_uiPointerAutoRootFallback)append_str(b,sizeof(b),n,ui_tr("pointers.fallbackModules"));append_str(b,sizeof(b),n,".");}b[n]=0;ui_set_status(b,(kind==3&&g_pointerChainCount==0)?2:1);}InvalidateRect(hwnd,nullptr,0);return 0;}
     if(msg==WM_PAINT_){PAINTSTRUCT_ ps{};HDC dc=BeginPaint(hwnd,&ps);RECT_ c{};GetClientRect(hwnd,&c);int w=(int)(c.right-c.left),h=(int)(c.bottom-c.top);HDC mem=CreateCompatibleDC(dc);HBITMAP bmp=CreateCompatibleBitmap(dc,w,h);HGDIOBJ old=SelectObject(mem,(HGDIOBJ)bmp);ui_render(mem);BitBlt(dc,0,0,w,h,mem,0,0,SRCCOPY_);SelectObject(mem,old);DeleteObject((HGDIOBJ)bmp);DeleteDC(mem);EndPaint(hwnd,&ps);return 0;}
-    if(msg==WM_CLOSE_&&g_uiBusy){ui_set_status(g_uiBusy==3?ui_tr("status.closeEngineBuildBusy"):(g_uiBusy==2?ui_tr("status.closePointerBusy"):ui_tr("status.closeScanBusy")),2);return 0;}
+    if(msg==WM_CLOSE_&&g_uiBusy){ui_set_status(g_uiBusy==2?ui_tr("status.closePointerBusy"):ui_tr("status.closeScanBusy"),2);return 0;}
     if(msg==WM_DESTROY_){KillTimer(hwnd,1);close_target();cw_gui_engine_shutdown();free_pointer_maps();if(g_results)HeapFree(g_heap,0,g_results);if(g_aobResults)HeapFree(g_heap,0,g_aobResults);if(g_pointerIndex)HeapFree(g_heap,0,g_pointerIndex);if(g_pointerChains)HeapFree(g_heap,0,g_pointerChains);if(g_snapshotBlocks)HeapFree(g_heap,0,g_snapshotBlocks);ui_destroy_resources();PostQuitMessage(0);return 0;}
     return DefWindowProcA(hwnd,msg,wParam,lParam);
 }

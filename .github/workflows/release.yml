@@ -67,6 +67,10 @@ jobs:
         shell: pwsh
         run: .\tests\ProductBuilderSmoke.ps1 -Builder .\build\Release\Cheat-Wizard-Builder.exe -WorkDir .\build\product-builder-smoke
 
+      - name: Generated engine RPC parity
+        shell: pwsh
+        run: .\build\Release\cw_engine_process_tests.exe .\build\product-builder-smoke\Cheat-Wizard\cw-engine.exe
+
       - name: Package standalone builder
         shell: pwsh
         run: .\scripts\Package-ProductBuilder.ps1 -Builder .\build\Release\Cheat-Wizard-Builder.exe -OutputDir .\dist -Version "${{ github.ref_name }}"

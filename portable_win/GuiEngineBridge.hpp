@@ -108,8 +108,6 @@ bool cw_gui_engine_start(char* error, std::size_t errorCapacity);
 void cw_gui_engine_shutdown();
 
 bool cw_gui_engine_exists();
-bool cw_gui_engine_builder_exists();
-bool cw_gui_engine_build(char* error, std::size_t errorCapacity);
 
 bool cw_gui_engine_connected();
 bool cw_gui_engine_attached();

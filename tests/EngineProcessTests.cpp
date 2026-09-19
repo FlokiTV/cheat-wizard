@@ -290,6 +290,76 @@ int wmain(int argc, wchar_t** argv) {
                  "NewScan transaction");
     ok &= expect(response.header.kind == cw::EngineMessageKind::NewScanResult, "NewScanResult response");
 
+    // Float exact-scan regression: the historical GUI used exact float matching with zero
+    // implicit tolerance. Keep that behavior valid through the IPC engine and the
+    // llvm-mingw product-builder engine.
+    volatile float floatProbe = 321.25f;
+    const auto floatProbeAddress = reinterpret_cast<std::uintptr_t>(const_cast<float*>(&floatProbe));
+
+    cw::EngineBufferWriter floatScanPayload;
+    floatScanPayload.writeU8(0); // exact
+    floatScanPayload.writeU8(5); // Float
+    floatScanPayload.writeU8(1); // byte alignment
+    floatScanPayload.writeU8(0x3); // writable + private
+    floatScanPayload.writeU64(floatProbeAddress - 64);
+    floatScanPayload.writeU64(floatProbeAddress + 64);
+    floatScanPayload.writeU64(0); // exact float comparison, no tolerance
+    floatScanPayload.writeString("321.25");
+    response = {};
+    ok &= expect(transact(client, cw::EngineMessageKind::FirstScan, requestId++, floatScanPayload.take(), response, error),
+                 "Float FirstScan transaction");
+    ok &= expect(response.header.kind == cw::EngineMessageKind::FirstScanResult, "Float FirstScanResult response");
+    cw::EngineBufferReader floatFirstReader(response.payload);
+    ok &= expect(floatFirstReader.readU8(hasScan) && hasScan == 1, "Float FirstScan active");
+    ok &= expect(floatFirstReader.readU8(snapshotActive) && snapshotActive == 0, "Float FirstScan materialized");
+    ok &= expect(floatFirstReader.readU8(mixedScan) && mixedScan == 0, "Float FirstScan typed");
+    ok &= expect(floatFirstReader.readU8(primaryType) && primaryType == 5, "Float FirstScan type");
+    ok &= expect(floatFirstReader.readU64(candidateCount) && candidateCount >= 1, "Float FirstScan candidates");
+    ok &= expect(floatFirstReader.readU64(resultCount) && resultCount >= 1, "Float FirstScan result count");
+    ok &= expect(floatFirstReader.readU64(scanBytes), "Float FirstScan bytes");
+    ok &= expect(floatFirstReader.readU64(scanRegions), "Float FirstScan regions");
+    ok &= expect(floatFirstReader.readU64(scanElapsed), "Float FirstScan elapsed");
+    ok &= expect(floatFirstReader.readU8(scanTruncated) && scanTruncated == 0, "Float FirstScan not truncated");
+    ok &= expect(floatFirstReader.readU8(scanCancelled) && scanCancelled == 0, "Float FirstScan completion flags");
+    std::array<std::uint64_t, 6> floatTypeCounts{};
+    for (auto& count : floatTypeCounts) ok &= expect(floatFirstReader.readU64(count), "Float FirstScan type count");
+    ok &= expect(floatTypeCounts[4] >= 1 && floatFirstReader.empty(), "Float FirstScan type counts complete");
+
+    cw::EngineBufferWriter floatResultsPayload;
+    floatResultsPayload.writeU32(0);
+    floatResultsPayload.writeU32(128);
+    response = {};
+    ok &= expect(transact(client, cw::EngineMessageKind::GetScanResults, requestId++, floatResultsPayload.take(), response, error),
+                 "Float GetScanResults transaction");
+    ok &= expect(response.header.kind == cw::EngineMessageKind::GetScanResultsResult, "Float GetScanResultsResult response");
+    cw::EngineBufferReader floatResultsReader(response.payload);
+    std::uint32_t floatReturnedResults{};
+    ok &= expect(floatResultsReader.readU8(resultsHasScan) && resultsHasScan == 1, "float results active");
+    ok &= expect(floatResultsReader.readU8(resultsSnapshot) && resultsSnapshot == 0, "float results materialized");
+    ok &= expect(floatResultsReader.readU8(resultsMixed) && resultsMixed == 0, "float results typed");
+    ok &= expect(floatResultsReader.readU64(resultsCandidates), "float results candidate count");
+    ok &= expect(floatResultsReader.readU64(totalResults) && totalResults >= 1, "float results total");
+    ok &= expect(floatResultsReader.readU32(floatReturnedResults) && floatReturnedResults >= 1, "float results page");
+    bool foundFloatProbe = false;
+    for (std::uint32_t i = 0; i < floatReturnedResults; ++i) {
+        std::uint64_t resultIndex{};
+        std::uint64_t resultAddress{};
+        std::uint8_t resultType{};
+        if (!floatResultsReader.readU64(resultIndex) || !floatResultsReader.readU64(resultAddress) ||
+            !floatResultsReader.readU8(resultType) || !skipOptionalValue(floatResultsReader) ||
+            !skipOptionalValue(floatResultsReader)) {
+            ok = false;
+            break;
+        }
+        if (resultAddress == floatProbeAddress && resultType == 5) foundFloatProbe = true;
+    }
+    ok &= expect(foundFloatProbe && floatResultsReader.empty(), "float scan page contains exact probe address");
+
+    response = {};
+    ok &= expect(transact(client, cw::EngineMessageKind::NewScan, requestId++, {}, response, error),
+                 "Float NewScan transaction");
+    ok &= expect(response.header.kind == cw::EngineMessageKind::NewScanResult, "Float NewScanResult response");
+
     // Freeze the same value and verify the worker keeps restoring it.
     const std::int32_t freezeWanted = 246813579;
     probe = 1;
