@@ -1,6 +1,6 @@
 # CW Engine Architecture
 
-Status: **accepted design / implementation in progress**
+Status: **implemented**
 
 This document defines the target architecture for separating Cheat Wizard frontends from process-memory access.
 
@@ -16,8 +16,10 @@ Target state:
 cw-gui.exe  ---- local IPC ---->  cw-engine.exe  ---- Win32 process APIs ----> target
 cw.exe      ---- local IPC ---->  cw-engine.exe
 
-cw-engine-builder.exe -- genuine local source build --> cw-engine.exe
-                                                     +-> cw-engine.build.json
+Cheat-Wizard-Builder.exe -- local source/toolchain build --> cw-gui.exe
+                                                       +-> cw-engine.exe
+                                                       +-> cw-trainer-builder.exe
+                                                       +-> build manifests
 
 GeneratedTrainer.exe remains self-contained.
 ```
@@ -36,9 +38,9 @@ Owns command parsing, terminal interaction, output formatting and the IPC client
 
 Owns process enumeration, attach/detach, module enumeration, pointer-width detection, typed memory access, scans, AOB, freezes, pointer discovery/rescan/profile resolution, cancellation/progress and engine-session state. It is the only interactive CW component allowed to perform target-memory operations.
 
-### `cw-engine-builder.exe`
+### `Cheat-Wizard-Builder.exe`
 
-Owns the local build experience. It must perform a real `source -> compile -> link -> validate` flow and generate `cw-engine.exe` beside the application. It must not contain a prebuilt engine and merely unpack, rename, patch or mutate that binary.
+Owns the end-user local build experience. It performs a real `source -> compile -> link -> validate` flow for the GUI, engine and Trainer Builder using an embedded pinned source/toolchain payload. It generates `cw-engine.exe` directly; a separate engine-builder executable is not required in the end-user folder.
 
 ## 3. Library boundaries
 
@@ -97,10 +99,9 @@ Normal flow:
 
 ```text
 frontend starts
-  -> engine operation requested
   -> locate cw-engine.exe + cw-engine.build.json
-  -> validate architecture/protocol/hash
-  -> if missing/incompatible: show Build/Rebuild Engine
+  -> validate/start the local engine
+  -> if the local product is missing/corrupt: instruct the user to rerun Cheat-Wizard-Builder.exe
   -> spawn cw-engine.exe --pipe <session> --owner-pid <pid>
   -> protocol handshake
   -> RPC
@@ -151,44 +152,30 @@ Existing `.cwptr`, `.cwchain`, `.cwmap`, `.cwscan`, `.cwaob` and `.cwtrainer` co
 
 ## 9. Portable local engine build
 
-Before build:
+The release entry point is a single standalone builder:
 
 ```text
-Cheat-Wizard/
-  cw-gui.exe
-  cw.exe
-  cw-engine-builder.exe
-  locales/
+Cheat-Wizard-Builder.exe
+        |
+        +-- embedded pinned source
+        +-- embedded dependency-pruned llvm-mingw
+        |
+        +-- Build & Launch
+              |
+              +-> Cheat-Wizard/
+                    cw-gui.exe
+                    cw-engine.exe
+                    cw-trainer-builder.exe
+                    cw-engine.build.json
+                    cw-build-manifest.json
+                    locales/
+                    LICENSE
+                    NOTICE
 ```
 
-After the user chooses **Build Engine**:
+The builder extracts only to a unique temporary workspace, compiles the product locally, validates the generated PE/protocol outputs, writes SHA-256 manifests, installs the completed folder atomically and removes the temporary workspace. It does not require Visual Studio, CMake, Git, Python or a network fetch on the client.
 
-```text
-Cheat-Wizard/
-  cw-gui.exe
-  cw.exe
-  cw-engine-builder.exe
-  cw-engine.exe
-  cw-engine.build.json
-  locales/
-```
-
-The engine is deliberately generated beside the application to preserve the portable-folder model.
-
-Builder UX:
-
-```text
-Engine: Not built
-[ Build Engine ]
-
-Preparing local toolchain...
-Compiling engine...
-Linking...
-Validating...
-Engine ready.
-```
-
-The embedded toolchain must be legally redistributable, support the required C/C++ subset, build Windows x64 without separately installed Visual Studio, include notices, avoid network fetches during build, and produce conventional PE metadata/mitigations. Toolchain selection remains an implementation task; candidates must be compared for size, license, headers/libs, C++ support and reproducibility.
+The toolchain is llvm-mingw 20260908 UCRT x64, pinned by upstream archive SHA-256 and dependency-pruned during payload preparation. Toolchain license/notices are preserved.
 
 ## 10. Engine manifest
 
@@ -256,9 +243,9 @@ Migration is complete when:
 8. long operations never block the GUI message loop.
 9. pipe is local/current-user restricted and all input is bounded.
 10. no admin/service/persistence is introduced.
-11. builder genuinely compiles engine source locally.
-12. builder works on a supported clean Windows x64 machine without requiring Visual Studio installation.
-13. generated engine is written beside Cheat Wizard.
+11. the standalone Product Builder genuinely compiles GUI/engine/trainer-builder source locally.
+12. the Product Builder works on a supported clean Windows x64 machine without requiring Visual Studio/CMake/Git installation.
+13. the generated application folder contains the locally built engine beside the GUI.
 14. `cw-engine.build.json` is generated and validated.
 15. failed rebuild preserves the prior engine.
 16. generated Trainers remain standalone.
@@ -277,7 +264,7 @@ Migration is complete when:
 7. migrate `cw-gui.exe` workspace by workspace;
 8. remove duplicated direct-memory frontend code;
 9. implement manifest/lifecycle;
-10. implement standalone local engine builder;
+10. implement the standalone Product Builder that generates the engine directly;
 11. run regression, security and release gates.
 
 During development a frontend may temporarily retain the old path, but the architecture is not accepted until both public frontends have lost direct target-memory imports.

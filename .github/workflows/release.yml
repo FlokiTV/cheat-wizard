@@ -18,15 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Prepare local engine builder payload
+      - name: Prepare standalone product builder payload
         shell: pwsh
-        run: .\scripts\Prepare-EngineBuilderPayload.ps1 -Output .\build\engine-builder-payload\engine-builder-payload.zip
+        run: .\scripts\Prepare-ProductBuilderPayload.ps1 -Output .\build\product-builder-payload\product-builder-payload.zip
 
       - name: Configure
         shell: pwsh
         run: |
-          $payload = (Resolve-Path .\build\engine-builder-payload\engine-builder-payload.zip).Path
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DCW_ENGINE_BUILDER_PAYLOAD="$payload"
+          $payload = (Resolve-Path .\build\product-builder-payload\product-builder-payload.zip).Path
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DCW_PRODUCT_BUILDER_PAYLOAD="$payload"
 
       - name: Verify VS2022 compiler family
         shell: pwsh
@@ -63,16 +63,20 @@ jobs:
         shell: pwsh
         run: .\tests\TrainerBuilderSmoke.ps1 -Builder .\build\Release\cw-trainer-builder.exe -WorkDir .\build\trainer-smoke
 
-      - name: Package Windows x64 release
+      - name: Standalone product builder smoke
         shell: pwsh
-        run: .\scripts\Package-Release.ps1 -BuildDir .\build -OutputDir .\dist -Version "${{ github.ref_name }}"
+        run: .\tests\ProductBuilderSmoke.ps1 -Builder .\build\Release\Cheat-Wizard-Builder.exe -WorkDir .\build\product-builder-smoke
+
+      - name: Package standalone builder
+        shell: pwsh
+        run: .\scripts\Package-ProductBuilder.ps1 -Builder .\build\Release\Cheat-Wizard-Builder.exe -OutputDir .\dist -Version "${{ github.ref_name }}"
 
       - name: Microsoft Defender release gate
         shell: pwsh
         run: |
           .\scripts\Test-ReleaseWithDefender.ps1 -Path @(
-            ".\dist\Cheat-Wizard-${{ github.ref_name }}-win64",
-            ".\dist\Cheat-Wizard-${{ github.ref_name }}-win64.zip"
+            ".\dist\Cheat-Wizard-Builder-${{ github.ref_name }}-win64.exe",
+            ".\build\product-builder-smoke\Cheat-Wizard"
           )
 
       - name: Generate release notes
@@ -82,10 +86,10 @@ jobs:
       - name: Upload release build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Cheat-Wizard-${{ github.ref_name }}-win64
+          name: Cheat-Wizard-Builder-${{ github.ref_name }}-win64
           path: |
-            dist/Cheat-Wizard-${{ github.ref_name }}-win64.zip
-            dist/Cheat-Wizard-${{ github.ref_name }}-win64.zip.sha256
+            dist/Cheat-Wizard-Builder-${{ github.ref_name }}-win64.exe
+            dist/Cheat-Wizard-Builder-${{ github.ref_name }}-win64.exe.sha256
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -96,8 +100,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag = "${{ github.ref_name }}"
           $repo = "${{ github.repository }}"
-          $zip = ".\dist\Cheat-Wizard-$tag-win64.zip"
-          $checksum = "$zip.sha256"
+          $asset = ".\dist\Cheat-Wizard-Builder-$tag-win64.exe"
+          $checksum = "$asset.sha256"
           $title = "Cheat Wizard $tag"
 
           gh release view $tag --repo $repo *> $null
@@ -105,7 +109,7 @@ jobs:
           $isPrerelease = $tag -match '-'
 
           if ($exists) {
-            gh release upload $tag $zip $checksum --repo $repo --clobber
+            gh release upload $tag $asset $checksum --repo $repo --clobber
             if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
 
             if ($isPrerelease) {
@@ -118,10 +122,10 @@ jobs:
           }
           else {
             if ($isPrerelease) {
-              gh release create $tag $zip $checksum --repo $repo --verify-tag --title $title --notes-file .\release-notes.md --prerelease
+              gh release create $tag $asset $checksum --repo $repo --verify-tag --title $title --notes-file .\release-notes.md --prerelease
             }
             else {
-              gh release create $tag $zip $checksum --repo $repo --verify-tag --title $title --notes-file .\release-notes.md --latest
+              gh release create $tag $asset $checksum --repo $repo --verify-tag --title $title --notes-file .\release-notes.md --latest
             }
             if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
           }

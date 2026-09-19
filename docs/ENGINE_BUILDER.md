@@ -1,6 +1,8 @@
 # CW Engine Builder
 
-Status: **standalone builder implementation in progress**
+Status: **legacy / developer-only**
+
+> End-user releases use `Cheat-Wizard-Builder.exe`, which compiles `cw-engine.exe` directly together with the GUI and Trainer Builder. `cw-engine-builder.exe` is retained only as an optional source/developer tool and is not required in the generated end-user folder.
 
 `cw-engine-builder.exe` is the local compiler/bootstrap component for the interactive Cheat Wizard engine. It performs a genuine local source build and writes the resulting `cw-engine.exe` beside Cheat Wizard (or to an explicitly supplied output directory).
 

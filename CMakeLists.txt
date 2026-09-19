@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(CheatWizard VERSION 1.7.3 LANGUAGES CXX)
 
 set(CW_ENGINE_BUILDER_PAYLOAD "" CACHE FILEPATH "Prepared standalone engine-builder payload ZIP")
+set(CW_PRODUCT_BUILDER_PAYLOAD "" CACHE FILEPATH "Prepared standalone product-builder payload ZIP")
 
 if(MSVC)
     # Keep all first-party libraries/executables on one portable CRT model.
@@ -304,6 +305,40 @@ if(WIN32)
         endif()
     else()
         message(STATUS "CW Engine Builder disabled: prepare payload with scripts/Prepare-EngineBuilderPayload.ps1 and set CW_ENGINE_BUILDER_PAYLOAD")
+    endif()
+
+    if(CW_PRODUCT_BUILDER_PAYLOAD)
+        get_filename_component(CW_PRODUCT_BUILDER_PAYLOAD_ABS "${CW_PRODUCT_BUILDER_PAYLOAD}" ABSOLUTE)
+        if(NOT EXISTS "${CW_PRODUCT_BUILDER_PAYLOAD_ABS}")
+            message(FATAL_ERROR "CW_PRODUCT_BUILDER_PAYLOAD does not exist: ${CW_PRODUCT_BUILDER_PAYLOAD_ABS}")
+        endif()
+        file(TO_CMAKE_PATH "${CW_PRODUCT_BUILDER_PAYLOAD_ABS}" CW_PRODUCT_BUILDER_PAYLOAD_RC)
+        set(product_builder_payload_rc "${CMAKE_CURRENT_BINARY_DIR}/generated/cw-product-builder-payload.rc")
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/ProductBuilderPayload.rc.in"
+            "${product_builder_payload_rc}"
+            @ONLY)
+
+        add_executable(cw_product_builder WIN32
+            src/ProductBuilderMain.cpp
+            "${product_builder_payload_rc}")
+        set_target_properties(cw_product_builder PROPERTIES OUTPUT_NAME "Cheat-Wizard-Builder")
+        cw_add_version_resource(
+            cw_product_builder
+            "Cheat-Wizard-Builder.exe"
+            "Cheat Wizard Standalone Builder"
+            "Cheat-Wizard-Builder")
+        cw_harden_windows_target(cw_product_builder)
+        target_compile_features(cw_product_builder PRIVATE cxx_std_20)
+        target_compile_definitions(cw_product_builder PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_link_libraries(cw_product_builder PRIVATE bcrypt shell32 user32)
+        if(MSVC)
+            target_compile_options(cw_product_builder PRIVATE /W4 /permissive- /EHsc /GS)
+        else()
+            target_compile_options(cw_product_builder PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+    else()
+        message(STATUS "Cheat Wizard Product Builder disabled: prepare payload with scripts/Prepare-ProductBuilderPayload.ps1 and set CW_PRODUCT_BUILDER_PAYLOAD")
     endif()
 
     add_executable(cw_cli

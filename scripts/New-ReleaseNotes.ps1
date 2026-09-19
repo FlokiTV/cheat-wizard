@@ -20,8 +20,12 @@ $body = $match.Groups[1].Value.Trim()
 $header = @"
 Windows x64 release of **Cheat Wizard $Tag**.
 
-Download `Cheat-Wizard-$Tag-win64.zip` and verify it with the attached
-`Cheat-Wizard-$Tag-win64.zip.sha256` file.
+Download ``Cheat-Wizard-Builder-$Tag-win64.exe`` and verify it with the attached
+``Cheat-Wizard-Builder-$Tag-win64.exe.sha256`` file.
+
+The standalone builder contains the pinned source/toolchain payload and compiles
+Cheat Wizard locally on the user's Windows x64 machine. No Visual Studio, CMake,
+Git or network download is required during the build.
 
 "@
 

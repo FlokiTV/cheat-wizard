@@ -9,9 +9,16 @@ Cheat Wizard (CW) is a Windows x64 memory-scanning and pointer-analysis project 
 
 ## Downloads
 
-Prebuilt Windows x64 packages are published under [GitHub Releases](https://github.com/FlokiTV/cheat-wizard/releases). Each release includes the ZIP package plus a SHA-256 sidecar file. The package also contains `SHA256SUMS.txt` for its individual files.
+Starting with v1.7.3 release candidates, the primary Windows x64 artifact is a single **standalone local builder**:
 
-Starting with v1.7.3, the public ZIP contains `cw-gui.exe` and `cw-trainer-builder.exe` only. The CLI (`cw.exe`) remains fully available in source builds and CI, but is temporarily excluded from prebuilt release ZIPs because Microsoft Defender FastPath continues to classify that executable as `Trojan:Win32/Wacatac.B!ml` on some browser downloads despite clean source/build audits and local Defender scans. This avoids asking users to bypass or whitelist a security warning.
+- `Cheat-Wizard-Builder-<version>-win64.exe`
+- `Cheat-Wizard-Builder-<version>-win64.exe.sha256`
+
+Run the builder and choose **Build & Launch**. It contains the pinned Cheat Wizard source plus a minimal verified llvm-mingw toolchain, compiles the application locally and installs the result into a `Cheat-Wizard` folder beside the builder by default. The local build does not require Visual Studio, CMake, Git or a network download.
+
+The generated folder contains `cw-gui.exe`, `cw-engine.exe`, `cw-trainer-builder.exe`, locales, licenses and build manifests with SHA-256 hashes. The CLI (`cw.exe`) remains available to source developers and CI but is not part of the end-user folder.
+
+This distribution model is source-first and reproducible; it is not an antivirus bypass. If Windows Security classifies a downloaded builder or generated file as malicious, do not disable Defender or add exclusions merely to run it. The project tracks those detections separately as release-validation issues.
 
 For the current stable build, use the [latest release](https://github.com/FlokiTV/cheat-wizard/releases/latest). Source builds from `main` are continuously validated by the Windows build/test workflow.
 
@@ -21,16 +28,20 @@ Cheat Wizard deliberately separates its tools:
 
 | Executable | Responsibility |
 | --- | --- |
-| `cw.exe` | **CLI only (source build / CI)**: value scans, AOB, pointer tools, maps and persistence. Not included in the prebuilt v1.7.3 ZIP while the Defender FastPath false positive remains unresolved. |
-| `cw-gui.exe` | Visual engineering tool: scanner, watched addresses, write/freeze, pointer discovery/rescan, `.cwptr` profiles and `.cwtrainer` project creation. |
+| `Cheat-Wizard-Builder.exe` | End-user bootstrap: contains pinned source + portable toolchain and builds the complete Cheat Wizard folder locally. |
+| `cw-gui.exe` | Visual frontend: scanner, watched addresses, write/freeze, pointer discovery/rescan, `.cwptr` profiles and `.cwtrainer` project creation. Live-process operations go through the local engine IPC boundary. |
+| `cw-engine.exe` | Local process/memory engine generated on the user's machine and accessed through the versioned Named Pipe protocol. |
 | `cw-trainer-builder.exe` | Offline packager: `.cwtrainer` + `.cwptr` files -> one standalone trainer EXE. |
+| `cw.exe` | CLI frontend for source builds / CI. It is not included in the end-user folder. |
 | generated `MyTrainer.exe` | Standalone trainer. No Cheat Wizard/Python/JSON/profile files are required beside it. |
 
 `cw.exe` is not an RPC server and is never a runtime dependency of a generated trainer.
 
-### Engine architecture migration
+### Engine architecture
 
-Cheat Wizard is being refactored so `cw.exe` and `cw-gui.exe` become frontends over a dedicated local `cw-engine.exe`. The engine will be generated locally by a standalone `cw-engine-builder.exe`, placed beside the application, and accessed through a versioned local Named Pipe protocol. Generated Trainers remain self-contained and do not depend on the interactive engine. The accepted design and migration criteria are documented in [`docs/ENGINE_ARCHITECTURE.md`](docs/ENGINE_ARCHITECTURE.md).
+The frontend/engine split is implemented. `cw-gui.exe` and `cw.exe` communicate with a dedicated local `cw-engine.exe` through a versioned Named Pipe protocol; the GUI binary is build-gated so direct live-process memory/toolhelp APIs cannot be reintroduced accidentally. The end-user standalone builder generates `cw-engine.exe` directly together with the GUI. To rebuild or repair the application, run `Cheat-Wizard-Builder.exe` again. Generated Trainers remain self-contained and do not depend on the interactive engine.
+
+See [`docs/ENGINE_ARCHITECTURE.md`](docs/ENGINE_ARCHITECTURE.md) and [`docs/PRODUCT_BUILDER.md`](docs/PRODUCT_BUILDER.md).
 
 ## Locales
 
@@ -128,6 +139,18 @@ See `docs/COMMANDS.md` and `docs/QUICKSTART.md` for the full CLI surface.
 
 ## Build on Windows
 
+### End-user local build
+
+No development environment is required. Download the release `Cheat-Wizard-Builder-<version>-win64.exe`, run it, and click **Build & Launch**. The builder works offline after download and places the locally compiled application in a `Cheat-Wizard` folder beside itself.
+
+For automated validation, the same executable supports:
+
+```bat
+Cheat-Wizard-Builder.exe --headless --output-dir C:\Temp\Cheat-Wizard
+```
+
+### Developer build
+
 Requirements:
 
 - Windows 10/11 x64
@@ -138,15 +161,13 @@ Requirements:
 build-release.bat
 ```
 
-CMake builds the CLI, GUI, native trainer runtime template and trainer builder. The runtime template is embedded into `cw-trainer-builder.exe`; users do not distribute that template separately. The build also copies `locales/*.json` beside `cw-gui.exe`.
-
-Run tests:
+CMake builds the CLI, GUI, engine, trainer runtime/template, trainer builder and optional standalone builders when their prepared payload ZIPs are supplied. Run tests with:
 
 ```bat
 test-windows.bat
 ```
 
-Tagged releases are automated. Pushing a `v*` tag runs the Windows build/test/smoke gates, packages the x64 release with `scripts/Package-Release.ps1`, generates notes from `CHANGELOG.md`, and publishes the ZIP plus its SHA-256 sidecar to GitHub Releases.
+Tagged releases prepare the pinned source/toolchain payload, build and smoke-test `Cheat-Wizard-Builder.exe`, scan the distributed builder and locally generated output with Microsoft Defender, then publish the builder plus its SHA-256 sidecar to GitHub Releases.
 
 ## Project layout
 
