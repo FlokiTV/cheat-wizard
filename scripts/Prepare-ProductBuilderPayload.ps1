@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Output,
-    [string]$CacheDir = (Join-Path $PSScriptRoot "..\build\product-builder-cache")
+    [string]$CacheDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +10,9 @@ $nl = [Environment]::NewLine
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $outputPath = [IO.Path]::GetFullPath($Output)
+if ([string]::IsNullOrWhiteSpace($CacheDir)) {
+    $CacheDir = Join-Path $repoRoot "build\product-builder-cache"
+}
 $cacheRoot = [IO.Path]::GetFullPath($CacheDir)
 
 $toolchainVersion = "20260908"
@@ -85,16 +88,54 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$Work
     }
 }
 
+function Get-FileSha256WithRetry([string]$Path, [int]$Attempts = 30, [int]$DelayMs = 1000) {
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        catch {
+            if ($attempt -eq $Attempts) {
+                throw
+            }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+    throw "Could not hash file after $Attempts attempts: $Path"
+}
+
+function Remove-DirectoryWithRetry([string]$Path, [int]$Attempts = 30, [int]$DelayMs = 1000) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        }
+        catch {
+            if ($attempt -eq $Attempts) {
+                throw
+            }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
+
 function Get-SourceDigest([string[]]$Files) {
+    $repoPrefix = $repoRoot.TrimEnd("\") + "\"
     $lines = foreach ($file in ($Files | Sort-Object)) {
-        $relative = [IO.Path]::GetRelativePath($repoRoot, $file).Replace("\", "/")
-        $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+        $fullFile = [IO.Path]::GetFullPath($file)
+        if (-not $fullFile.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Digest input is outside the repository root: $fullFile"
+        }
+        $relative = $fullFile.Substring($repoPrefix.Length).Replace("\", "/")
+        $hash = (Get-FileHash -LiteralPath $fullFile -Algorithm SHA256).Hash.ToLowerInvariant()
         "$relative=$hash"
     }
     $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join $nl) + $nl)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
-        ([Convert]::ToHexString($sha.ComputeHash($bytes))).ToLowerInvariant()
+        ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
     }
     finally {
         $sha.Dispose()
@@ -108,6 +149,8 @@ function New-VersionRc(
     [string]$OriginalFilename
 ) {
     $content = @"
+101 ICON "source/resources/cheat-wizard.ico"
+
 1 VERSIONINFO
 FILEVERSION 1,7,3,0
 PRODUCTVERSION 1,7,3,0
@@ -146,26 +189,37 @@ if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
     Invoke-WebRequest -Uri $toolchainUrl -OutFile $archivePath
 }
 
-$actualSha = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$actualSha = Get-FileSha256WithRetry $archivePath
 if ($actualSha -ne $toolchainSha256) {
     throw "llvm-mingw SHA-256 mismatch. Expected $toolchainSha256, got $actualSha"
 }
 
 $extractParent = Join-Path $cacheRoot "extracted"
 $fullRoot = Join-Path $extractParent "llvm-mingw-$toolchainVersion-ucrt-x86_64"
-if (-not (Test-Path -LiteralPath (Join-Path $fullRoot "bin\x86_64-w64-mingw32-clang++.exe") -PathType Leaf)) {
-    if (Test-Path -LiteralPath $extractParent) {
-        Remove-Item -LiteralPath $extractParent -Recurse -Force
+$requiredExtractedFiles = @(
+    "bin\x86_64-w64-mingw32-clang++.exe",
+    "bin\clang-23.exe",
+    "bin\llvm-windres.exe",
+    "bin\ld.lld.exe",
+    "bin\libLLVM-23.dll",
+    "bin\libclang-cpp.dll"
+)
+$toolchainReady = $true
+foreach ($relative in $requiredExtractedFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $fullRoot $relative) -PathType Leaf)) {
+        $toolchainReady = $false
+        break
     }
+}
+if (-not $toolchainReady) {
+    Remove-DirectoryWithRetry $extractParent
     Ensure-Directory $extractParent
     Write-Host "Extracting verified llvm-mingw archive..."
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractParent -Force
 }
 
 $workRoot = Join-Path $cacheRoot "work"
-if (Test-Path -LiteralPath $workRoot) {
-    Remove-Item -LiteralPath $workRoot -Recurse -Force
-}
+Remove-DirectoryWithRetry $workRoot
 Ensure-Directory $workRoot
 $depRoot = Join-Path $workRoot "deps"
 $depGenerated = Join-Path $depRoot "generated"
@@ -294,6 +348,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "NOTICE") -Destination (Join-Path $s
 
 $resourceRoot = Join-Path $sourceRoot "resources"
 Ensure-Directory $resourceRoot
+Copy-Item -LiteralPath (Join-Path $repoRoot "resources\cheat-wizard.ico") -Destination (Join-Path $resourceRoot "cheat-wizard.ico") -Force
 New-VersionRc (Join-Path $resourceRoot "engine-version.rc") "Cheat Wizard Engine" "cw-engine" "cw-engine.exe"
 New-VersionRc (Join-Path $resourceRoot "gui-version.rc") "Cheat Wizard" "cw-gui" "cw-gui.exe"
 New-VersionRc (Join-Path $resourceRoot "trainer-runtime-version.rc") "Cheat Wizard Trainer Runtime" "trainer-runtime-template" "trainer-runtime-template.exe"
@@ -303,6 +358,7 @@ Copy-Item -LiteralPath (Join-Path $resourceRoot "engine-version.rc") -Destinatio
 $digestFiles = @()
 foreach ($relative in $sourceFiles) { $digestFiles += (Join-Path $repoRoot $relative) }
 foreach ($relative in $portableHeaders) { $digestFiles += (Join-Path $repoRoot $relative) }
+$digestFiles += (Join-Path $repoRoot "resources\cheat-wizard.ico")
 $digestFiles += Get-ChildItem -LiteralPath (Join-Path $repoRoot "include\cw") -Recurse -File | ForEach-Object FullName
 $digestFiles += @(
     (Join-Path $repoRoot "locales\en-US.json"),
@@ -314,7 +370,7 @@ $sourceDigest = Get-SourceDigest $digestFiles
 
 $sourceRevision = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $sourceRevision) { $sourceRevision = "unknown" }
-$dirty = & git -C $repoRoot status --porcelain -- src include/cw portable_win locales LICENSE NOTICE
+$dirty = & git -C $repoRoot status --porcelain -- src include/cw portable_win locales resources/cheat-wizard.ico LICENSE NOTICE
 if ($dirty) { $sourceRevision += "-dirty" }
 
 $metadata = @(
@@ -329,7 +385,7 @@ $metadata = @(
     "toolchain=$toolchainId",
     "toolchainUpstreamSha256=$toolchainSha256"
 ) -join $nl
-Set-Content -LiteralPath (Join-Path $payloadRoot "BUILD-METADATA.txt") -Value ($metadata + $nl) -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $payloadRoot "BUILD-METADATA.txt") -Value ($metadata + $nl) -Encoding ASCII
 Copy-Item -LiteralPath (Join-Path $fullRoot "LICENSE.TXT") -Destination (Join-Path $payloadRoot "TOOLCHAIN-LICENSE.txt") -Force
 $headerSet | Sort-Object | Set-Content -LiteralPath (Join-Path $payloadRoot "TOOLCHAIN-FILES.txt") -Encoding UTF8
 

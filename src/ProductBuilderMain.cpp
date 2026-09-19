@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <CommCtrl.h>
 #include <bcrypt.h>
 #include <shellapi.h>
 
@@ -18,16 +19,21 @@
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "comctl32.lib")
 
 namespace fs = std::filesystem;
 
 namespace {
 
 constexpr int kPayloadResourceId = 301;
+constexpr int kAppIconResourceId = 101;
 constexpr wchar_t kBuilderVersion[] = L"1.7.3";
 constexpr UINT WM_CW_STATUS = WM_APP + 41;
 constexpr UINT WM_CW_DONE = WM_APP + 42;
 constexpr int kButtonId = 1001;
+constexpr int kProgressId = 1002;
+constexpr UINT_PTR kAutoCloseTimerId = 1;
 
 using StatusCallback = std::function<void(const std::wstring&)>;
 
@@ -843,15 +849,33 @@ struct UiState {
     HWND status{};
     HWND button{};
     HWND output{};
+    HWND progress{};
+    HFONT titleFont{};
+    HFONT bodyFont{};
     fs::path outputDirectory;
     bool building{};
 };
 
 UiState g_ui;
 
+int progressForStatus(std::wstring_view value) {
+    if (value == L"Preparing embedded source and toolchain...") return 8;
+    if (value == L"Compiling shared Cheat Wizard sources...") return 25;
+    if (value == L"Building local engine...") return 45;
+    if (value == L"Building Cheat Wizard GUI...") return 60;
+    if (value == L"Building trainer runtime...") return 72;
+    if (value == L"Building trainer builder...") return 82;
+    if (value == L"Writing manifests and support files...") return 90;
+    if (value == L"Installing locally built Cheat Wizard...") return 97;
+    if (value == L"Build complete.") return 100;
+    return -1;
+}
+
 void postStatus(HWND window, const std::wstring& value) {
     auto* text = new std::wstring(value);
-    if (!PostMessageW(window, WM_CW_STATUS, 0, reinterpret_cast<LPARAM>(text))) delete text;
+    const int progress = progressForStatus(value);
+    const WPARAM progressParam = progress >= 0 ? static_cast<WPARAM>(progress + 1) : 0;
+    if (!PostMessageW(window, WM_CW_STATUS, progressParam, reinterpret_cast<LPARAM>(text))) delete text;
 }
 
 DWORD WINAPI buildThread(void* parameter) {
@@ -873,44 +897,89 @@ DWORD WINAPI buildThread(void* parameter) {
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_CREATE: {
-            HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-            CreateWindowExW(
-                0, L"STATIC",
-                L"Build Cheat Wizard locally from the source and compiler embedded in this builder.",
+            g_ui.titleFont = CreateFontW(
+                -24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            g_ui.bodyFont = CreateFontW(
+                -16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            HFONT bodyFont = g_ui.bodyFont
+                ? g_ui.bodyFont
+                : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+
+            HWND title = CreateWindowExW(
+                0, L"STATIC", L"Cheat Wizard Builder",
                 WS_CHILD | WS_VISIBLE,
-                24, 24, 510, 40,
+                24, 20, 420, 34,
+                window, nullptr, nullptr, nullptr);
+            HWND subtitle = CreateWindowExW(
+                0, L"STATIC", L"Local source build - no Visual Studio required",
+                WS_CHILD | WS_VISIBLE,
+                24, 54, 540, 24,
+                window, nullptr, nullptr, nullptr);
+            HWND description = CreateWindowExW(
+                0, L"STATIC",
+                L"Builds Cheat Wizard locally using the source and compiler embedded in this file.",
+                WS_CHILD | WS_VISIBLE,
+                24, 86, 540, 32,
+                window, nullptr, nullptr, nullptr);
+            HWND outputLabel = CreateWindowExW(
+                0, L"STATIC", L"Install folder",
+                WS_CHILD | WS_VISIBLE,
+                24, 124, 540, 22,
                 window, nullptr, nullptr, nullptr);
             g_ui.output = CreateWindowExW(
                 0, L"STATIC",
-                (L"Output: " + g_ui.outputDirectory.wstring()).c_str(),
-                WS_CHILD | WS_VISIBLE,
-                24, 68, 510, 38,
+                g_ui.outputDirectory.wstring().c_str(),
+                WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS,
+                24, 146, 540, 24,
                 window, nullptr, nullptr, nullptr);
+            g_ui.progress = CreateWindowExW(
+                0, PROGRESS_CLASSW, nullptr,
+                WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
+                24, 184, 540, 18,
+                window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProgressId)), nullptr, nullptr);
             g_ui.status = CreateWindowExW(
-                0, L"STATIC", L"Ready.",
+                0, L"STATIC", L"Ready to build.",
                 WS_CHILD | WS_VISIBLE,
-                24, 118, 510, 28,
+                24, 210, 540, 28,
                 window, nullptr, nullptr, nullptr);
             g_ui.button = CreateWindowExW(
                 0, L"BUTTON", L"Build && Launch",
-                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                24, 160, 180, 38,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                24, 248, 180, 40,
                 window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kButtonId)), nullptr, nullptr);
-            SendMessageW(g_ui.output, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-            SendMessageW(g_ui.status, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-            SendMessageW(g_ui.button, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+            if (g_ui.progress) {
+                SendMessageW(g_ui.progress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+                SendMessageW(g_ui.progress, PBM_SETPOS, 0, 0);
+            }
+            SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(
+                g_ui.titleFont ? g_ui.titleFont : bodyFont), TRUE);
+            SendMessageW(subtitle, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
+            SendMessageW(description, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
+            SendMessageW(outputLabel, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
+            SendMessageW(g_ui.output, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
+            SendMessageW(g_ui.status, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
+            SendMessageW(g_ui.button, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
             return 0;
         }
         case WM_COMMAND:
             if (LOWORD(wParam) == kButtonId && !g_ui.building) {
                 g_ui.building = true;
                 EnableWindow(g_ui.button, FALSE);
+                SetWindowTextW(g_ui.button, L"Building...");
                 SetWindowTextW(g_ui.status, L"Starting local build...");
+                if (g_ui.progress) SendMessageW(g_ui.progress, PBM_SETPOS, 2, 0);
                 HANDLE thread = CreateThread(nullptr, 0, buildThread, window, 0, nullptr);
                 if (!thread) {
                     g_ui.building = false;
                     EnableWindow(g_ui.button, TRUE);
+                    SetWindowTextW(g_ui.button, L"Build && Launch");
                     SetWindowTextW(g_ui.status, L"Could not start build worker.");
+                    if (g_ui.progress) SendMessageW(g_ui.progress, PBM_SETPOS, 0, 0);
                 } else {
                     CloseHandle(thread);
                 }
@@ -923,21 +992,32 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 SetWindowTextW(g_ui.status, text->c_str());
                 delete text;
             }
+            if (wParam > 0 && g_ui.progress) {
+                SendMessageW(g_ui.progress, PBM_SETPOS, static_cast<WPARAM>(wParam - 1), 0);
+            }
             return 0;
         }
         case WM_CW_DONE:
             g_ui.building = false;
-            EnableWindow(g_ui.button, TRUE);
             if (wParam == 0) {
+                if (g_ui.progress) SendMessageW(g_ui.progress, PBM_SETPOS, 100, 0);
+                SetWindowTextW(g_ui.button, L"Done");
                 SetWindowTextW(g_ui.status, L"Build complete. Launching Cheat Wizard...");
                 if (!launchGui(g_ui.outputDirectory)) {
+                    EnableWindow(g_ui.button, TRUE);
+                    SetWindowTextW(g_ui.button, L"Build && Launch");
                     MessageBoxW(
                         window,
                         L"Cheat Wizard was built successfully, but cw-gui.exe could not be launched automatically.",
                         L"Cheat Wizard Builder",
                         MB_OK | MB_ICONWARNING);
+                } else {
+                    SetWindowTextW(g_ui.status, L"Done. Cheat Wizard is starting...");
+                    SetTimer(window, kAutoCloseTimerId, 900, nullptr);
                 }
             } else {
+                EnableWindow(g_ui.button, TRUE);
+                SetWindowTextW(g_ui.button, L"Build && Launch");
                 auto* error = reinterpret_cast<std::wstring*>(lParam);
                 const std::wstring errorMessage = error ? *error : L"Unknown build error.";
                 delete error;
@@ -945,6 +1025,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 MessageBoxW(window, errorMessage.c_str(), L"Cheat Wizard Builder", MB_OK | MB_ICONERROR);
             }
             return 0;
+        case WM_TIMER:
+            if (wParam == kAutoCloseTimerId) {
+                KillTimer(window, kAutoCloseTimerId);
+                DestroyWindow(window);
+                return 0;
+            }
+            break;
         case WM_CLOSE:
             if (g_ui.building) {
                 MessageBoxW(window, L"Wait for the local build to finish before closing.", L"Cheat Wizard Builder", MB_OK);
@@ -953,6 +1040,14 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             DestroyWindow(window);
             return 0;
         case WM_DESTROY:
+            if (g_ui.titleFont) {
+                DeleteObject(g_ui.titleFont);
+                g_ui.titleFont = nullptr;
+            }
+            if (g_ui.bodyFont) {
+                DeleteObject(g_ui.bodyFont);
+                g_ui.bodyFont = nullptr;
+            }
             PostQuitMessage(0);
             return 0;
     }
@@ -1021,13 +1116,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
         g_ui.outputDirectory = options.outputDirectory;
 
-        WNDCLASSW windowClass{};
+        INITCOMMONCONTROLSEX controls{};
+        controls.dwSize = sizeof(controls);
+        controls.dwICC = ICC_PROGRESS_CLASS;
+        if (!InitCommonControlsEx(&controls)) {
+            throw std::runtime_error("Could not initialize Windows common controls");
+        }
+
+        WNDCLASSEXW windowClass{};
+        windowClass.cbSize = sizeof(windowClass);
         windowClass.lpfnWndProc = windowProc;
         windowClass.hInstance = instance;
         windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(kAppIconResourceId));
+        windowClass.hIconSm = static_cast<HICON>(LoadImageW(
+            instance,
+            MAKEINTRESOURCEW(kAppIconResourceId),
+            IMAGE_ICON,
+            16,
+            16,
+            LR_DEFAULTCOLOR));
         windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         windowClass.lpszClassName = L"CheatWizardStandaloneBuilder";
-        if (!RegisterClassW(&windowClass)) {
+        if (!RegisterClassExW(&windowClass)) {
             throw std::runtime_error("Could not register builder window");
         }
 
@@ -1038,8 +1149,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            575,
-            260,
+            620,
+            340,
             nullptr,
             nullptr,
             instance,

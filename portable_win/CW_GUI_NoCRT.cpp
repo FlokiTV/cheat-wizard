@@ -543,6 +543,7 @@ __declspec(dllimport) LRESULT __stdcall SendMessageA(HWND,UINT,WPARAM,LPARAM);
 __declspec(dllimport) int __stdcall MessageBoxA(HWND,const char*,const char*,UINT);
 __declspec(dllimport) BOOL __stdcall SetWindowTextW(HWND,const wchar_t*);
 __declspec(dllimport) HCURSOR __stdcall LoadCursorA(HINSTANCE,const char*);
+__declspec(dllimport) HICON __stdcall LoadIconA(HINSTANCE,const char*);
 __declspec(dllimport) UINT_PTR __stdcall SetTimer(HWND,UINT_PTR,UINT,void*);
 __declspec(dllimport) BOOL __stdcall KillTimer(HWND,UINT_PTR);
 __declspec(dllimport) HDC __stdcall BeginPaint(HWND,PAINTSTRUCT_*);
@@ -2225,7 +2226,7 @@ static LRESULT __stdcall ui_wndproc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lPar
 
 extern "C" void guiCRTStartup(){
     SetProcessDPIAware();g_heap=GetProcessHeap();ui_locale_initialize();strcopy(g_uiStatus,sizeof(g_uiStatus),ui_tr("status.ready"));g_out=CreateFileA("NUL",GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-    HINSTANCE inst=GetModuleHandleA(nullptr);WNDCLASSEXA_ wc{};wc.cbSize=(UINT)sizeof(wc);wc.style=CS_DBLCLKS_;wc.lpfnWndProc=ui_wndproc;wc.hInstance=inst;wc.hCursor=LoadCursorA(nullptr,(const char*)(uptr)32512);wc.hbrBackground=nullptr;wc.lpszClassName="CheatWizardGuiV2";
+    HINSTANCE inst=GetModuleHandleA(nullptr);WNDCLASSEXA_ wc{};wc.cbSize=(UINT)sizeof(wc);wc.style=CS_DBLCLKS_;wc.lpfnWndProc=ui_wndproc;wc.hInstance=inst;wc.hIcon=LoadIconA(inst,(const char*)(uptr)101);wc.hIconSm=wc.hIcon;wc.hCursor=LoadCursorA(nullptr,(const char*)(uptr)32512);wc.hbrBackground=nullptr;wc.lpszClassName="CheatWizardGuiV2";
     if(!RegisterClassExA(&wc)){MessageBoxA(nullptr,"RegisterClassExA failed.",ui_tr("app.name"),MB_OK_|MB_ICONERROR_);ExitProcess(1);}DWORD style=WS_OVERLAPPED_|WS_CAPTION_|WS_SYSMENU_|WS_MINIMIZEBOX_|WS_MAXIMIZEBOX_|WS_THICKFRAME_;
     HWND hwnd=CreateWindowExA(0,"CheatWizardGuiV2","Cheat Wizard v1.7.3 - Memory Scanner, Pointers & Trainer Projects",style,70,45,1320,860,nullptr,nullptr,inst,nullptr);if(!hwnd){MessageBoxA(nullptr,"CreateWindowExA failed.",ui_tr("app.name"),MB_OK_|MB_ICONERROR_);ExitProcess(2);}g_hwnd=hwnd;ui_set_localized_window_title();ui_try_dark_titlebar(hwnd);ShowWindow(hwnd,SW_SHOW_);UpdateWindow(hwnd);
     MSG_ m{};while(GetMessageA(&m,nullptr,0,0)>0){TranslateMessage(&m);DispatchMessageA(&m);}if(g_out)CloseHandle(g_out);ExitProcess(0);
