@@ -13,6 +13,7 @@ std::vector<PointerChain> findPointerChains(
     const std::vector<PointerModule>& modules,
     std::uintptr_t target,
     const PointerScanOptions& options,
-    bool* truncated = nullptr);
+    bool* truncated = nullptr,
+    PointerSearchDiagnostics* diagnostics = nullptr);
 
 } // namespace cw

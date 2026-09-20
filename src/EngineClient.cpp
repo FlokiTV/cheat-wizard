@@ -200,8 +200,8 @@ bool EngineClient::handshake(std::string& error) {
         error = "Malformed engine handshake response";
         return false;
     }
-    if (major != kEngineProtocolMajor) {
-        error = "Engine protocol major mismatch";
+    if (major != kEngineProtocolMajor || minor != kEngineProtocolMinor) {
+        error = "Engine protocol version mismatch";
         return false;
     }
     engineVersion_ = std::move(version);

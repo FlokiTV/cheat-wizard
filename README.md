@@ -9,14 +9,14 @@ Cheat Wizard (CW) is a Windows x64 memory-scanning and pointer-analysis project 
 
 ## Downloads
 
-Starting with v1.7.3 release candidates, the primary Windows x64 artifact is a single **standalone local builder**:
+Starting with v1.7.3, the primary Windows x64 artifact is a single **standalone local builder**:
 
 - `Cheat-Wizard-Builder-<version>-win64.exe`
 - `Cheat-Wizard-Builder-<version>-win64.exe.sha256`
 
 Run the builder and choose **Build & Launch**. It contains the pinned Cheat Wizard source plus a minimal verified llvm-mingw toolchain, compiles the application locally and installs the result into a `Cheat-Wizard` folder beside the builder by default. The local build does not require Visual Studio, CMake, Git or a network download.
 
-The generated folder contains `cw-gui.exe`, `cw-engine.exe`, `cw-trainer-builder.exe`, locales, licenses and build manifests with SHA-256 hashes. The CLI (`cw.exe`) remains available to source developers and CI but is not part of the end-user folder.
+The generated folder contains `Cheat Wizard.exe`, `cw-engine.exe`, `cw-trainer-builder.exe`, locales, licenses and build manifests with SHA-256 hashes. The CLI (`cw.exe`) remains available to source developers and CI but is not part of the end-user folder.
 
 This distribution model is source-first and reproducible; it is not an antivirus bypass. If Windows Security classifies a downloaded builder or generated file as malicious, do not disable Defender or add exclusions merely to run it. The project tracks those detections separately as release-validation issues.
 
@@ -29,7 +29,7 @@ Cheat Wizard deliberately separates its tools:
 | Executable | Responsibility |
 | --- | --- |
 | `Cheat-Wizard-Builder.exe` | End-user bootstrap: contains pinned source + portable toolchain and builds the complete Cheat Wizard folder locally. |
-| `cw-gui.exe` | Visual frontend: scanner, watched addresses, write/freeze, pointer discovery/rescan, `.cwptr` profiles and `.cwtrainer` project creation. Live-process operations go through the local engine IPC boundary. |
+| `Cheat Wizard.exe` | Visual frontend: scanner, watched addresses, write/freeze, pointer discovery/rescan, `.cwptr` profiles and `.cwtrainer` project creation. Live-process operations go through the local engine IPC boundary. |
 | `cw-engine.exe` | Local process/memory engine generated on the user's machine and accessed through the versioned Named Pipe protocol. |
 | `cw-trainer-builder.exe` | Offline packager: `.cwtrainer` + `.cwptr` files -> one standalone trainer EXE. |
 | `cw.exe` | CLI frontend for source builds / CI. It is not included in the end-user folder. |
@@ -39,13 +39,13 @@ Cheat Wizard deliberately separates its tools:
 
 ### Engine architecture
 
-The frontend/engine split is implemented. `cw-gui.exe` and `cw.exe` communicate with a dedicated local `cw-engine.exe` through a versioned Named Pipe protocol; the GUI binary is build-gated so direct live-process memory/toolhelp APIs cannot be reintroduced accidentally. The end-user standalone builder generates `cw-engine.exe` directly together with the GUI. To rebuild or repair the application, run `Cheat-Wizard-Builder.exe` again. Generated Trainers remain self-contained and do not depend on the interactive engine.
+The frontend/engine split is implemented. `Cheat Wizard.exe` and `cw.exe` communicate with a dedicated local `cw-engine.exe` through the versioned Named Pipe protocol **1.1**; frontend and engine must agree on the protocol version before process operations are accepted. The GUI binary is build-gated so direct live-process memory/toolhelp APIs cannot be reintroduced accidentally. The end-user standalone builder generates `cw-engine.exe` directly together with the GUI. To rebuild or repair the application, run `Cheat-Wizard-Builder.exe` again. Generated Trainers remain self-contained and do not depend on the interactive engine.
 
 See [`docs/ENGINE_ARCHITECTURE.md`](docs/ENGINE_ARCHITECTURE.md) and [`docs/PRODUCT_BUILDER.md`](docs/PRODUCT_BUILDER.md).
 
 ## Locales
 
-The GUI loads UTF-8 JSON locale files from the `locales/` directory beside `cw-gui.exe`.
+The GUI loads UTF-8 JSON locale files from the `locales/` directory beside `Cheat Wizard.exe`.
 
 Included initially:
 
@@ -56,16 +56,16 @@ The language selector is shown in the GUI footer. The selected locale is persist
 
 Locale discovery is dynamic: to add another language, place another flat JSON file in `locales/` with a valid `_meta.code`. No hard-coded language registry or rebuild is required. See `docs/BRANDING_LOCALES.md` for the locale contract and compatibility rules.
 
-## v1.7.0 — pointer workflow, ranking and visual Trainer Builder
+## v1.7.3 highlights
 
-- Pointer workspace spacing and profile actions were reorganized, with clearer live-value/consensus information.
-- Custom text fields support caret placement, selection, Ctrl+A, arrows, Home/End, Delete/Backspace and double-click select-all.
-- Scanner result ranking can use proximity to the Address List while keeping the reason visible in the score/near column.
-- The Address List separates scan value from the current/new value and keeps freeze actions per row.
-- Trainer Builder has form/configuration and visual modes, native color selection, live preview and PNG/JPEG/BMP/GIF -> multi-size `.ico` conversion.
-- `.cwtrainer` stores the Trainer project and visual settings. `cw-trainer-builder.exe` packages the theme and optional icon into the standalone trainer.
-- Generated trainers use redundant pointer-chain consensus, automatically wait/reattach to the configured process, expose current values, Apply/Write and Freeze, and remain single-file executables.
-- The GUI now supports external UTF-8 locale JSONs with `en-US` and `pt-BR` included.
+- The public Windows release is now the standalone `Cheat-Wizard-Builder.exe`, which embeds pinned source plus a verified, dependency-pruned llvm-mingw toolchain and builds the application locally.
+- The graphical frontend is emitted as `Cheat Wizard.exe`; `cw-engine.exe` and `cw-trainer-builder.exe` are generated beside it by the builder.
+- GUI process/memory operations are isolated behind the local engine IPC boundary, currently protocol **1.1**.
+- Exact Float scans preserve exact historical behavior by using zero implicit tolerance unless another frontend explicitly supplies one.
+- Pointer discovery now supports **Auto**, **Indexed** and **Targeted** strategies. Auto can fall back from a bounded global index to the targeted layered search, while the Deep preset uses targeted mode directly.
+- Pointer diagnostics expose index/search limits, targeted frontier progress and fallback state instead of silently returning an empty result after a partial search.
+- Scanner result ranking, watched-address write/freeze, restart-based pointer rescans, redundant `.cwptr` profiles and the visual Trainer Builder remain part of the native GUI.
+- External UTF-8 locales remain dynamic, with `en-US` and `pt-BR` included by default.
 
 ## GUI workflow
 
@@ -84,7 +84,7 @@ select process -> Attach
 
 The Scanner workspace supports Byte, Int16, Int32, Int64, Float, Double and mixed/unknown workflows. Watched addresses display scan value separately from the live current value. Write is read-back verified and Freeze uses a separate worker.
 
-The Pointer workspace supports restart-based stability rescans, module-relative roots and redundant profile persistence. `.cwptr` profiles contain module-relative roots and signed offsets, not restart-stale absolute heap addresses. Legacy `.mcptr` profiles remain loadable.
+The Pointer workspace supports restart-based stability rescans, module-relative roots and redundant profile persistence. Fast/Balanced use the indexed path with Auto fallback when needed; Deep uses the targeted layered search directly so it is not dependent on the global pointer-index ceiling. `.cwptr` profiles contain module-relative roots and signed offsets, not restart-stale absolute heap addresses. Legacy `.mcptr` profiles remain loadable.
 
 ## CLI highlights
 
@@ -181,7 +181,7 @@ scripts/             release packaging and release-notes automation
 docs/                architecture, GUI, trainer, validation and commands
 tests/               core and mocked Win32 tests
 examples/            example trainer project
-bin/                 ready-to-run Windows x64 release files
+bin/                 developer/reference Windows x64 binaries and compatibility fixtures
 ```
 
 ## License

@@ -34,6 +34,12 @@ struct PointerChain {
     std::vector<std::int64_t> offsets;
 };
 
+enum class PointerSearchMode : std::uint8_t {
+    Auto = 0,     // indexed search, with targeted fallback when no chain is found
+    Indexed = 1,  // global pointer index + reverse DFS only
+    Targeted = 2, // index-free layered reverse scan
+};
+
 struct PointerScanOptions {
     std::size_t maxDepth{3};
     std::uintptr_t maxOffset{0x1000};
@@ -51,6 +57,8 @@ struct PointerScanOptions {
     bool writableOnly{false};
     bool privateOnly{false};
 
+    PointerSearchMode searchMode{PointerSearchMode::Auto};
+
     // Empty = allow roots in any loaded module. The pointer search is always
     // statically rooted in a module; this narrows it to one module by name.
     std::wstring rootModuleName;
@@ -64,9 +72,27 @@ struct PointerScanStats {
     std::uint64_t regionsRead{};
     double indexMs{};
     double searchMs{};
+    std::size_t directCandidates{};
+    std::size_t searchCandidates{};
+    std::size_t targetedDepth{};
+    std::size_t targetedFrontier{};
+    std::uint64_t targetedSlots{};
+    std::uint64_t targetedMatches{};
     bool indexTruncated{};
     bool chainsTruncated{};
+    bool searchBudgetHit{};
+    bool branchLimitHit{};
+    bool targetedTruncated{};
+    bool targetedUsed{};
+    bool targetedFallbackUsed{};
     bool cancelled{};
+};
+
+struct PointerSearchDiagnostics {
+    std::size_t candidatesExamined{};
+    bool budgetHit{};
+    bool branchLimitHit{};
+    bool chainLimitHit{};
 };
 
 } // namespace cw

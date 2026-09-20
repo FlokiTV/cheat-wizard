@@ -52,6 +52,7 @@ public:
 
 private:
     bool buildIndex(const PointerScanOptions& options, PointerScanStats& stats);
+    bool searchTargeted(std::uintptr_t target, const PointerScanOptions& options, PointerScanStats& stats);
     std::optional<std::uintptr_t> readPointer(std::uintptr_t address) const;
     const ModuleInfo* findModule(const std::wstring& name) const;
     void reportProgress(const PointerScanStats& stats) const;

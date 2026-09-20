@@ -74,6 +74,30 @@ int main() {
         expect(resolved && *resolved == target, "pointer chain resolves to target");
     }
 
+    // Deep/targeted mode must find the same chain without building a monolithic index.
+    PointerScanOptions targetedOptions = options;
+    targetedOptions.searchMode = PointerSearchMode::Targeted;
+    const auto targetedStats = scanner.scan(target, targetedOptions);
+    expect(targetedStats.targetedUsed, "targeted pointer scan reports targeted strategy");
+    expect(targetedStats.indexEntries == 0, "targeted pointer scan does not build a global index");
+    expect(std::any_of(scanner.chains().begin(), scanner.chains().end(), [](const PointerChain& chain) {
+        return chain.rootOffset == 0x100 && chain.offsets == std::vector<std::int64_t>{0x20, 0x30};
+    }), "targeted pointer scan finds expected chain");
+
+    // Auto mode must recover when a dense/early region exhausts the global index
+    // before the useful module root is ever indexed.
+    writeAt<std::uint64_t>(mockwin::base, mockwin::base + 0x7000);
+    PointerScanOptions fallbackOptions = options;
+    fallbackOptions.searchMode = PointerSearchMode::Auto;
+    fallbackOptions.maxIndexEntries = 1;
+    const auto fallbackStats = scanner.scan(target, fallbackOptions);
+    expect(fallbackStats.indexTruncated, "auto pointer scan observes truncated global index");
+    expect(fallbackStats.targetedFallbackUsed && fallbackStats.targetedUsed,
+           "auto pointer scan falls back to targeted search");
+    expect(std::any_of(scanner.chains().begin(), scanner.chains().end(), [](const PointerChain& chain) {
+        return chain.rootOffset == 0x100 && chain.offsets == std::vector<std::int64_t>{0x20, 0x30};
+    }), "targeted fallback recovers chain hidden beyond index cap");
+
     const auto before = scanner.chains().size();
     const auto kept = scanner.rescan(target);
     expect(kept == before, "rescan keeps chains that still resolve to target");

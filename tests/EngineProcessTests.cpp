@@ -443,6 +443,7 @@ int wmain(int argc, wchar_t** argv) {
     pointerDiscoverPayload.writeU32(100000); // max search candidates
     pointerDiscoverPayload.writeU16(pointerSize); // natural pointer alignment
     pointerDiscoverPayload.writeU8(0); // no memory-type filter
+    pointerDiscoverPayload.writeU8(1); // indexed search for the baseline RPC test
     pointerDiscoverPayload.writeString(moduleNameUtf8);
     response = {};
     ok &= expect(transact(client, cw::EngineMessageKind::PointerDiscover, requestId++, pointerDiscoverPayload.take(), response, error),
@@ -456,8 +457,19 @@ int wmain(int argc, wchar_t** argv) {
     std::uint64_t discoveredRegions{};
     std::uint64_t discoveredIndexMs{};
     std::uint64_t discoveredSearchMs{};
+    std::uint64_t discoveredDirectCandidates{};
+    std::uint64_t discoveredSearchCandidates{};
+    std::uint64_t discoveredTargetedDepth{};
+    std::uint64_t discoveredTargetedFrontier{};
+    std::uint64_t discoveredTargetedSlots{};
+    std::uint64_t discoveredTargetedMatches{};
     std::uint8_t discoveredIndexTruncated{};
     std::uint8_t discoveredChainsTruncated{};
+    std::uint8_t discoveredSearchBudgetHit{};
+    std::uint8_t discoveredBranchLimitHit{};
+    std::uint8_t discoveredTargetedTruncated{};
+    std::uint8_t discoveredTargetedUsed{};
+    std::uint8_t discoveredTargetedFallbackUsed{};
     std::uint8_t discoveredCancelled{};
     ok &= expect(pointerDiscoverReader.readU16(discoveredPointerSize) && discoveredPointerSize == pointerSize,
                  "pointer discover width");
@@ -468,10 +480,84 @@ int wmain(int argc, wchar_t** argv) {
     ok &= expect(pointerDiscoverReader.readU64(discoveredRegions) && discoveredRegions > 0, "pointer discover regions");
     ok &= expect(pointerDiscoverReader.readU64(discoveredIndexMs), "pointer discover index time");
     ok &= expect(pointerDiscoverReader.readU64(discoveredSearchMs), "pointer discover search time");
+    ok &= expect(pointerDiscoverReader.readU64(discoveredDirectCandidates) && discoveredDirectCandidates > 0,
+                 "pointer discover direct candidate count");
+    ok &= expect(pointerDiscoverReader.readU64(discoveredSearchCandidates) && discoveredSearchCandidates > 0,
+                 "pointer discover search candidate count");
+    ok &= expect(pointerDiscoverReader.readU64(discoveredTargetedDepth) && discoveredTargetedDepth == 0,
+                 "indexed discover targeted depth");
+    ok &= expect(pointerDiscoverReader.readU64(discoveredTargetedFrontier) && discoveredTargetedFrontier == 0,
+                 "indexed discover targeted frontier");
+    ok &= expect(pointerDiscoverReader.readU64(discoveredTargetedSlots) && discoveredTargetedSlots == 0,
+                 "indexed discover targeted slots");
+    ok &= expect(pointerDiscoverReader.readU64(discoveredTargetedMatches) && discoveredTargetedMatches == 0,
+                 "indexed discover targeted matches");
     ok &= expect(pointerDiscoverReader.readU8(discoveredIndexTruncated), "pointer discover index truncated flag");
     ok &= expect(pointerDiscoverReader.readU8(discoveredChainsTruncated), "pointer discover chains truncated flag");
+    ok &= expect(pointerDiscoverReader.readU8(discoveredSearchBudgetHit), "pointer discover budget flag");
+    ok &= expect(pointerDiscoverReader.readU8(discoveredBranchLimitHit), "pointer discover branch flag");
+    ok &= expect(pointerDiscoverReader.readU8(discoveredTargetedTruncated), "pointer discover targeted truncated flag");
+    ok &= expect(pointerDiscoverReader.readU8(discoveredTargetedUsed) && discoveredTargetedUsed == 0,
+                 "indexed discover targeted-used flag");
+    ok &= expect(pointerDiscoverReader.readU8(discoveredTargetedFallbackUsed) && discoveredTargetedFallbackUsed == 0,
+                 "indexed discover targeted-fallback flag");
     ok &= expect(pointerDiscoverReader.readU8(discoveredCancelled) && discoveredCancelled == 0 && pointerDiscoverReader.empty(),
                  "pointer discover completion");
+
+    // Targeted/Deep path is index-free and must still discover the deterministic
+    // module-rooted pointer through the real engine IPC boundary.
+    cw::EngineBufferWriter targetedDiscoverPayload;
+    targetedDiscoverPayload.writeU64(probeAddress);
+    targetedDiscoverPayload.writeU16(1); // max depth
+    targetedDiscoverPayload.writeU64(0); // exact pointer only
+    targetedDiscoverPayload.writeU64(0); // no negative offset
+    targetedDiscoverPayload.writeU32(128); // max chains
+    targetedDiscoverPayload.writeU32(1); // deliberately irrelevant in targeted mode
+    targetedDiscoverPayload.writeU32(4096); // parent cap
+    targetedDiscoverPayload.writeU32(100000); // frontier/node budget
+    targetedDiscoverPayload.writeU16(pointerSize); // natural pointer alignment
+    targetedDiscoverPayload.writeU8(0); // no memory-type filter
+    targetedDiscoverPayload.writeU8(2); // targeted search
+    targetedDiscoverPayload.writeString(moduleNameUtf8);
+    response = {};
+    ok &= expect(transact(client, cw::EngineMessageKind::PointerDiscover, requestId++,
+                          targetedDiscoverPayload.take(), response, error),
+                 "Targeted PointerDiscover transaction");
+    ok &= expect(response.header.kind == cw::EngineMessageKind::PointerDiscoverResult,
+                 "Targeted PointerDiscoverResult response");
+    cw::EngineBufferReader targetedReader(response.payload);
+    std::uint16_t targetedPointerSize{};
+    std::uint64_t targetedIndexEntries{}, targetedChains{}, targetedBytes{}, targetedRegions{};
+    std::uint64_t targetedIndexMs{}, targetedSearchMs{}, targetedDirect{}, targetedCandidates{};
+    std::uint64_t targetedDepth{}, targetedFrontier{}, targetedSlots{}, targetedMatches{};
+    std::uint8_t targetedIndexTruncated{}, targetedChainsTruncated{}, targetedBudgetHit{}, targetedBranchHit{};
+    std::uint8_t targetedWasTruncated{}, targetedWasUsed{}, targetedFallbackUsed{}, targetedCancelled{};
+    ok &= expect(targetedReader.readU16(targetedPointerSize) && targetedPointerSize == pointerSize,
+                 "targeted pointer width");
+    ok &= expect(targetedReader.readU64(targetedIndexEntries) && targetedIndexEntries == 0,
+                 "targeted scan is index-free");
+    ok &= expect(targetedReader.readU64(targetedChains) && targetedChains > 0,
+                 "targeted scan finds module-rooted chain");
+    ok &= expect(targetedReader.readU64(targetedBytes) && targetedBytes > 0, "targeted scan reads bytes");
+    ok &= expect(targetedReader.readU64(targetedRegions) && targetedRegions > 0, "targeted scan reads regions");
+    ok &= expect(targetedReader.readU64(targetedIndexMs), "targeted index time field");
+    ok &= expect(targetedReader.readU64(targetedSearchMs), "targeted search time field");
+    ok &= expect(targetedReader.readU64(targetedDirect) && targetedDirect > 0, "targeted direct matches");
+    ok &= expect(targetedReader.readU64(targetedCandidates), "targeted indexed candidate field");
+    ok &= expect(targetedReader.readU64(targetedDepth) && targetedDepth == 1, "targeted depth");
+    ok &= expect(targetedReader.readU64(targetedFrontier) && targetedFrontier == 1, "targeted initial frontier");
+    ok &= expect(targetedReader.readU64(targetedSlots) && targetedSlots > 0, "targeted slots scanned");
+    ok &= expect(targetedReader.readU64(targetedMatches) && targetedMatches > 0, "targeted pointer matches");
+    ok &= expect(targetedReader.readU8(targetedIndexTruncated), "targeted index-truncated field");
+    ok &= expect(targetedReader.readU8(targetedChainsTruncated), "targeted chains-truncated field");
+    ok &= expect(targetedReader.readU8(targetedBudgetHit), "targeted budget field");
+    ok &= expect(targetedReader.readU8(targetedBranchHit), "targeted branch field");
+    ok &= expect(targetedReader.readU8(targetedWasTruncated), "targeted frontier-truncated field");
+    ok &= expect(targetedReader.readU8(targetedWasUsed) && targetedWasUsed == 1, "targeted-used flag");
+    ok &= expect(targetedReader.readU8(targetedFallbackUsed) && targetedFallbackUsed == 0,
+                 "targeted fallback flag");
+    ok &= expect(targetedReader.readU8(targetedCancelled) && targetedCancelled == 0 && targetedReader.empty(),
+                 "targeted discover completion");
 
     cw::EngineBufferWriter profilePayload;
     profilePayload.writeU16(pointerSize);

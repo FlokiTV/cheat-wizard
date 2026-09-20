@@ -35,6 +35,9 @@ struct SearchContext {
     const PointerScanOptions& options;
     std::vector<PointerChain> chains;
     bool truncated{};
+    bool budgetHit{};
+    bool branchLimitHit{};
+    bool chainLimitHit{};
     std::size_t workUsed{};
 
     void dfs(
@@ -45,7 +48,14 @@ struct SearchContext {
     {
         if (depth >= options.maxDepth || chains.size() >= options.maxChains ||
             workUsed >= options.maxSearchCandidates) {
-            if (chains.size() >= options.maxChains || workUsed >= options.maxSearchCandidates) truncated = true;
+            if (chains.size() >= options.maxChains) {
+                truncated = true;
+                chainLimitHit = true;
+            }
+            if (workUsed >= options.maxSearchCandidates) {
+                truncated = true;
+                budgetHit = true;
+            }
             return;
         }
 
@@ -69,8 +79,16 @@ struct SearchContext {
         auto right = center;
         std::size_t candidates = 0;
         while (left != rangeBegin || right != rangeEnd) {
-            if (++candidates > options.maxCandidatesPerNode || ++workUsed > options.maxSearchCandidates) {
+            ++candidates;
+            ++workUsed;
+            if (candidates > options.maxCandidatesPerNode) {
                 truncated = true;
+                branchLimitHit = true;
+                return;
+            }
+            if (workUsed > options.maxSearchCandidates) {
+                truncated = true;
+                budgetHit = true;
                 return;
             }
 
@@ -113,6 +131,7 @@ struct SearchContext {
                 chains.push_back(std::move(chain));
                 if (chains.size() >= options.maxChains) {
                     truncated = true;
+                    chainLimitHit = true;
                     return;
                 }
                 continue;
@@ -134,9 +153,10 @@ std::vector<PointerChain> findPointerChains(
     const std::vector<PointerModule>& modules,
     std::uintptr_t target,
     const PointerScanOptions& options,
-    bool* truncated)
+    bool* truncated,
+    PointerSearchDiagnostics* diagnostics)
 {
-    SearchContext ctx{sortedIndex, modules, options, {}, false};
+    SearchContext ctx{sortedIndex, modules, options};
     std::vector<std::uintptr_t> path;
     path.push_back(target);
     ctx.dfs(target, 0, {}, path);
@@ -155,6 +175,12 @@ std::vector<PointerChain> findPointerChains(
     ctx.chains.erase(std::unique(ctx.chains.begin(), ctx.chains.end(), equalChain), ctx.chains.end());
 
     if (truncated) *truncated = ctx.truncated;
+    if (diagnostics) {
+        diagnostics->candidatesExamined = ctx.workUsed;
+        diagnostics->budgetHit = ctx.budgetHit;
+        diagnostics->branchLimitHit = ctx.branchLimitHit;
+        diagnostics->chainLimitHit = ctx.chainLimitHit;
+    }
     return ctx.chains;
 }
 

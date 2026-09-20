@@ -18,7 +18,7 @@ $toolchainSha256 = "1bcf74d06b724aeecaa6412ca85f5b26fb1da770e7cdcefa9263c9c5c3ad
 $toolchainId = "llvm-mingw-$toolchainVersion-ucrt-x86_64-minimal"
 $engineVersion = "1.7.3"
 $protocolMajor = 1
-$protocolMinor = 0
+$protocolMinor = 1
 
 $sourceNames = @(
     "Value", "AobPattern", "AobPersistence", "ScanPersistence",

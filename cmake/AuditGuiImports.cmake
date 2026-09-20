@@ -27,7 +27,7 @@ endforeach()
 
 if(found)
     list(JOIN found ", " found_text)
-    message(FATAL_ERROR "cw-gui.exe contains forbidden live-process imports: ${found_text}")
+    message(FATAL_ERROR "Cheat Wizard.exe contains forbidden live-process imports: ${found_text}")
 endif()
 
 message(STATUS "GUI import audit PASS: no live-process memory/toolhelp imports")

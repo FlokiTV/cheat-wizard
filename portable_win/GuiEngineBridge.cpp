@@ -554,6 +554,11 @@ extern "C" bool cw_gui_engine_pointer_scan(
     native.maxNegativeOffset = static_cast<std::uintptr_t>(options->maxNegativeOffset);
     native.writableOnly = options->writableOnly != 0;
     native.privateOnly = options->privateOnly != 0;
+    if (options->searchMode > static_cast<std::uint8_t>(cw::PointerSearchMode::Targeted)) {
+        copyError("Invalid pointer search mode", error, errorCapacity);
+        return false;
+    }
+    native.searchMode = static_cast<cw::PointerSearchMode>(options->searchMode);
     if (options->rootModule[0]) {
         native.rootModuleName = utf8ToWide(options->rootModule);
         if (native.rootModuleName.empty()) {
@@ -563,15 +568,31 @@ extern "C" bool cw_gui_engine_pointer_scan(
     }
 
     const auto result = g_pointerScanner.scan(static_cast<std::uintptr_t>(target), native);
+    if (!g_pointerScanner.lastOperationOk()) {
+        copyError(g_pointerScanner.lastError().empty() ? "Pointer scan failed" : g_pointerScanner.lastError(),
+                  error, errorCapacity);
+        return false;
+    }
     std::memset(stats, 0, sizeof(*stats));
     stats->pointerSize = static_cast<std::uint16_t>(result.pointerSize);
     stats->indexTruncated = result.indexTruncated ? 1u : 0u;
     stats->chainsTruncated = result.chainsTruncated ? 1u : 0u;
     stats->cancelled = result.cancelled ? 1u : 0u;
+    stats->searchBudgetHit = result.searchBudgetHit ? 1u : 0u;
+    stats->branchLimitHit = result.branchLimitHit ? 1u : 0u;
+    stats->targetedTruncated = result.targetedTruncated ? 1u : 0u;
+    stats->targetedUsed = result.targetedUsed ? 1u : 0u;
+    stats->targetedFallbackUsed = result.targetedFallbackUsed ? 1u : 0u;
     stats->indexEntries = static_cast<std::uint64_t>(result.indexEntries);
     stats->chains = static_cast<std::uint64_t>(result.chains);
     stats->bytesRead = result.bytesRead;
     stats->regionsRead = result.regionsRead;
+    stats->directCandidates = static_cast<std::uint64_t>(result.directCandidates);
+    stats->searchCandidates = static_cast<std::uint64_t>(result.searchCandidates);
+    stats->targetedDepth = static_cast<std::uint64_t>(result.targetedDepth);
+    stats->targetedFrontier = static_cast<std::uint64_t>(result.targetedFrontier);
+    stats->targetedSlots = result.targetedSlots;
+    stats->targetedMatches = result.targetedMatches;
     stats->indexMs = result.indexMs;
     stats->searchMs = result.searchMs;
     clearError(error, errorCapacity);
@@ -587,6 +608,11 @@ extern "C" bool cw_gui_engine_pointer_rescan(
     if (!g_client.attached()) { copyError("No process attached", error, errorCapacity); return false; }
     *before = static_cast<std::uint64_t>(g_pointerScanner.chains().size());
     *after = static_cast<std::uint64_t>(g_pointerScanner.rescan(static_cast<std::uintptr_t>(target)));
+    if (!g_pointerScanner.lastOperationOk()) {
+        copyError(g_pointerScanner.lastError().empty() ? "Pointer rescan failed" : g_pointerScanner.lastError(),
+                  error, errorCapacity);
+        return false;
+    }
     clearError(error, errorCapacity);
     return true;
 }

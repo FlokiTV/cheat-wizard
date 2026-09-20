@@ -691,7 +691,7 @@ int buildProduct(const fs::path& outputDirectory, const StatusCallback& status) 
         std::string versionOutput;
         if (!runProcess(engineExe, {L"--version"}, workspace, exitCode, &versionOutput) ||
             exitCode != 0 ||
-            versionOutput.find("protocol 1.0") == std::string::npos) {
+            versionOutput.find("protocol 1.1") == std::string::npos) {
             throw std::runtime_error("Generated engine failed protocol/version self-check");
         }
 
@@ -720,7 +720,7 @@ int buildProduct(const fs::path& outputDirectory, const StatusCallback& status) 
         guiObjects.push_back(guiMain);
         guiObjects.push_back(guiEntry);
         guiObjects.push_back(guiVersion);
-        const fs::path guiExe = productDirectory / L"cw-gui.exe";
+        const fs::path guiExe = productDirectory / L"Cheat Wizard.exe";
         linkExecutable(
             compiler,
             guiObjects,
@@ -730,7 +730,7 @@ int buildProduct(const fs::path& outputDirectory, const StatusCallback& status) 
             false,
             workspace);
         if (!validatePe(guiExe, IMAGE_SUBSYSTEM_WINDOWS_GUI, peError)) {
-            throw std::runtime_error("cw-gui.exe validation failed: " + peError);
+            throw std::runtime_error("Cheat Wizard.exe validation failed: " + peError);
         }
 
         setStatus(status, L"Building trainer runtime...");
@@ -804,13 +804,13 @@ int buildProduct(const fs::path& outputDirectory, const StatusCallback& status) 
         readme
             << "Cheat Wizard " << metadata.at("productVersion") << "\r\n"
             << "Built locally from the source revision embedded in Cheat-Wizard-Builder.exe.\r\n"
-            << "Run cw-gui.exe to start Cheat Wizard.\r\n"
+            << "Run Cheat Wizard.exe to start Cheat Wizard.\r\n"
             << "To rebuild or repair the application, run Cheat-Wizard-Builder.exe again.\r\n";
         readme.close();
 
         std::map<std::string, std::string> hashes{
             {"cw-engine.exe", engineHash},
-            {"cw-gui.exe", sha256File(guiExe)},
+            {"Cheat Wizard.exe", sha256File(guiExe)},
             {"cw-trainer-builder.exe", sha256File(trainerBuilderExe)}
         };
         writeProductManifest(productDirectory / L"cw-build-manifest.json", metadata, hashes);
@@ -839,7 +839,7 @@ void writeFailureLog(std::string_view message) {
 }
 
 bool launchGui(const fs::path& outputDirectory) {
-    const fs::path gui = outputDirectory / L"cw-gui.exe";
+    const fs::path gui = outputDirectory / L"Cheat Wizard.exe";
     HINSTANCE result = ShellExecuteW(nullptr, L"open", gui.c_str(), nullptr, outputDirectory.c_str(), SW_SHOWNORMAL);
     return reinterpret_cast<INT_PTR>(result) > 32;
 }
@@ -1008,7 +1008,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                     SetWindowTextW(g_ui.button, L"Build && Launch");
                     MessageBoxW(
                         window,
-                        L"Cheat Wizard was built successfully, but cw-gui.exe could not be launched automatically.",
+                        L"Cheat Wizard was built successfully, but Cheat Wizard.exe could not be launched automatically.",
                         L"Cheat Wizard Builder",
                         MB_OK | MB_ICONWARNING);
                 } else {

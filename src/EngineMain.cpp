@@ -861,8 +861,19 @@ void writePointerStats(cw::EngineBufferWriter& payload, const cw::PointerScanSta
     payload.writeU64(stats.regionsRead);
     payload.writeU64(doubleToBits(stats.indexMs));
     payload.writeU64(doubleToBits(stats.searchMs));
+    payload.writeU64(static_cast<std::uint64_t>(stats.directCandidates));
+    payload.writeU64(static_cast<std::uint64_t>(stats.searchCandidates));
+    payload.writeU64(static_cast<std::uint64_t>(stats.targetedDepth));
+    payload.writeU64(static_cast<std::uint64_t>(stats.targetedFrontier));
+    payload.writeU64(stats.targetedSlots);
+    payload.writeU64(stats.targetedMatches);
     payload.writeU8(stats.indexTruncated ? 1u : 0u);
     payload.writeU8(stats.chainsTruncated ? 1u : 0u);
+    payload.writeU8(stats.searchBudgetHit ? 1u : 0u);
+    payload.writeU8(stats.branchLimitHit ? 1u : 0u);
+    payload.writeU8(stats.targetedTruncated ? 1u : 0u);
+    payload.writeU8(stats.targetedUsed ? 1u : 0u);
+    payload.writeU8(stats.targetedFallbackUsed ? 1u : 0u);
     payload.writeU8(stats.cancelled ? 1u : 0u);
 }
 
@@ -876,12 +887,13 @@ bool readPointerOptions(cw::EngineBufferReader& reader, cw::PointerScanOptions& 
     std::uint32_t maxSearchCandidates = 0;
     std::uint16_t alignment = 0;
     std::uint8_t flags = 0;
+    std::uint8_t searchMode = 0;
     std::string rootModule;
     if (!reader.readU16(maxDepth) || !reader.readU64(maxOffset) ||
         !reader.readU64(maxNegativeOffset) || !reader.readU32(maxChains) ||
         !reader.readU32(maxIndexEntries) || !reader.readU32(maxCandidatesPerNode) ||
         !reader.readU32(maxSearchCandidates) || !reader.readU16(alignment) ||
-        !reader.readU8(flags) || !reader.readString(rootModule)) {
+        !reader.readU8(flags) || !reader.readU8(searchMode) || !reader.readString(rootModule)) {
         error = "Pointer options are truncated";
         return false;
     }
@@ -890,7 +902,8 @@ bool readPointerOptions(cw::EngineBufferReader& reader, cw::PointerScanOptions& 
         maxCandidatesPerNode == 0 || maxCandidatesPerNode > 100'000 ||
         maxSearchCandidates == 0 || maxSearchCandidates > 20'000'000 ||
         (alignment != 0 && alignment != 1 && alignment != 2 && alignment != 4 && alignment != 8) ||
-        (flags & ~0x3u) != 0) {
+        (flags & ~0x3u) != 0 ||
+        searchMode > static_cast<std::uint8_t>(cw::PointerSearchMode::Targeted)) {
         error = "Pointer options exceed allowed limits";
         return false;
     }
@@ -914,6 +927,7 @@ bool readPointerOptions(cw::EngineBufferReader& reader, cw::PointerScanOptions& 
     options.alignment = alignment;
     options.writableOnly = (flags & 0x1u) != 0;
     options.privateOnly = (flags & 0x2u) != 0;
+    options.searchMode = static_cast<cw::PointerSearchMode>(searchMode);
     options.rootModuleName = std::move(rootModuleWide);
     error.clear();
     return true;
@@ -1296,6 +1310,7 @@ int runEngine(const std::wstring& pipeName, DWORD ownerPid) {
     }
     if (hello.header.kind != cw::EngineMessageKind::Hello ||
         hello.header.protocolMajor != cw::kEngineProtocolMajor ||
+        hello.header.protocolMinor != cw::kEngineProtocolMinor ||
         hello.header.requestId == 0) {
         sendOrReport(server, makeError(hello, ERROR_REVISION_MISMATCH, "Invalid engine Hello/protocol"));
         return 5;
@@ -1326,7 +1341,9 @@ int runEngine(const std::wstring& pipeName, DWORD ownerPid) {
             break;
         }
 
-        if (request.header.protocolMajor != cw::kEngineProtocolMajor || request.header.requestId == 0 ||
+        if (request.header.protocolMajor != cw::kEngineProtocolMajor ||
+            request.header.protocolMinor != cw::kEngineProtocolMinor ||
+            request.header.requestId == 0 ||
             (request.header.flags & (cw::EngineFrameFlagResponse | cw::EngineFrameFlagEvent)) != 0) {
             if (!sendOrReport(server, makeError(request, ERROR_INVALID_DATA, "Invalid request header"))) break;
             continue;

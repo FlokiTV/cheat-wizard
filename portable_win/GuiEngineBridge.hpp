@@ -76,7 +76,8 @@ struct CwGuiPointerOptions {
     std::uint64_t maxNegativeOffset;
     std::uint8_t writableOnly;
     std::uint8_t privateOnly;
-    std::uint8_t reserved[6];
+    std::uint8_t searchMode; // 0=auto, 1=indexed, 2=targeted
+    std::uint8_t reserved[5];
     char rootModule[260];
 };
 
@@ -85,11 +86,22 @@ struct CwGuiPointerStats {
     std::uint8_t indexTruncated;
     std::uint8_t chainsTruncated;
     std::uint8_t cancelled;
-    std::uint8_t reserved[3];
+    std::uint8_t searchBudgetHit;
+    std::uint8_t branchLimitHit;
+    std::uint8_t targetedTruncated;
+    std::uint8_t targetedUsed;
+    std::uint8_t targetedFallbackUsed;
+    std::uint8_t reserved[5];
     std::uint64_t indexEntries;
     std::uint64_t chains;
     std::uint64_t bytesRead;
     std::uint64_t regionsRead;
+    std::uint64_t directCandidates;
+    std::uint64_t searchCandidates;
+    std::uint64_t targetedDepth;
+    std::uint64_t targetedFrontier;
+    std::uint64_t targetedSlots;
+    std::uint64_t targetedMatches;
     double indexMs;
     double searchMs;
 };

@@ -1,6 +1,6 @@
 # Architecture
 
-> **Architecture migration in progress:** the current direct-process topology documented below describes the pre-engine split. The accepted target architecture moves all interactive target-memory access into a locally built `cw-engine.exe`, with `cw.exe` and `cw-gui.exe` acting as IPC frontends. See [`ENGINE_ARCHITECTURE.md`](ENGINE_ARCHITECTURE.md).
+> **Architecture migration in progress:** the current direct-process topology documented below describes the pre-engine split. The accepted target architecture moves all interactive target-memory access into a locally built `cw-engine.exe`, with `cw.exe` and `Cheat Wizard.exe` acting as IPC frontends. See [`ENGINE_ARCHITECTURE.md`](ENGINE_ARCHITECTURE.md).
 
 ```text
 CLI
@@ -205,7 +205,7 @@ The CLI reads the four displacement bytes directly from the attached process at 
 
 ## v1.5 Scanner + Pointers GUI frontend
 
-`portable_win/CW_GUI_NoCRT.cpp` is the no-CRT Windows x64 GUI frontend source used to build `bin/cw-gui.exe`. The portable build intentionally keeps no CRT dependency.
+`portable_win/CW_GUI_NoCRT.cpp` is the no-CRT Windows x64 GUI frontend source used to build `bin/Cheat Wizard.exe`. The portable build intentionally keeps no CRT dependency.
 
 The v1.5 frontend uses a custom GDI-rendered application shell rather than legacy `LISTBOX`/`COMBOBOX` composition. Numeric text entry is also custom retained/drawn. The renderer owns cards, buttons, dropdowns, virtual value/pointer tables, hover/selection states, status indicators and freeze checkboxes. Whole-window painting is double-buffered.
 

@@ -241,10 +241,13 @@ Commands:
   pointer-settings alignment <natural|byte|2|4|8>
   pointer-settings writable <on|off>
   pointer-settings private <on|off>
+  pointer-settings mode <auto|indexed|targeted>
   pointer-settings branch <count>
   pointer-settings root <any|module-name>
-      Pointer roots are always static module addresses; 'root' can restrict
-      them to one module. Source filters/alignment affect pointer indexing.
+      Auto uses the global pointer index first and falls back to an index-free
+      layered search whenever that indexed path finds no chain.
+      Targeted runs the layered search directly. Pointer roots are always static
+      module addresses; 'root' can restrict them to one module.
 
   pointer-scan <target> [depth] [max_offset] [max_chains] [max_negative_offset]
       Find pointer chains ending at #result-index or a raw address.
@@ -521,9 +524,12 @@ void printPointerSettings(const cw::PointerScanOptions& options) {
     if (options.alignment == 0) std::cout << "natural";
     else if (options.alignment == 1) std::cout << "byte";
     else std::cout << options.alignment;
+    const char* mode = options.searchMode == cw::PointerSearchMode::Targeted ? "targeted" :
+                       (options.searchMode == cw::PointerSearchMode::Indexed ? "indexed" : "auto");
     std::cout << '\n'
               << "  writable  : " << (options.writableOnly ? "on" : "off") << '\n'
               << "  private   : " << (options.privateOnly ? "on" : "off") << '\n'
+              << "  mode      : " << mode << '\n'
               << "  branch    : " << options.maxCandidatesPerNode << '\n'
               << "  root      : " << (options.rootModuleName.empty() ? "any module" : wideToUtf8(options.rootModuleName)) << '\n';
 }
@@ -609,7 +615,17 @@ void printPointerStats(const cw::PointerScanStats& stats) {
               << " | Index time: " << std::setprecision(1) << stats.indexMs << " ms"
               << " | Index throughput: " << mibPerSecond << " MiB/s"
               << " | Search time: " << stats.searchMs << " ms";
+    if (stats.directCandidates != 0) std::cout << " | Direct parents: " << stats.directCandidates;
+    if (stats.searchCandidates != 0) std::cout << " | Search candidates: " << stats.searchCandidates;
+    if (stats.targetedUsed) {
+        std::cout << " | Targeted depth: " << stats.targetedDepth
+                  << " | Targeted matches: " << stats.targetedMatches;
+        if (stats.targetedFallbackUsed) std::cout << " | TARGETED FALLBACK";
+    }
     if (stats.indexTruncated) std::cout << " | INDEX TRUNCATED";
+    if (stats.searchBudgetHit) std::cout << " | SEARCH BUDGET HIT";
+    if (stats.branchLimitHit) std::cout << " | BRANCH LIMIT HIT";
+    if (stats.targetedTruncated) std::cout << " | TARGETED FRONTIER TRUNCATED";
     if (stats.chainsTruncated) std::cout << " | SEARCH TRUNCATED";
     if (stats.cancelled) std::cout << " | CANCELLED";
     std::cout << '\n';
@@ -2167,7 +2183,7 @@ int main() {
                 continue;
             }
             if (args.size() != 3) {
-                std::cout << "Usage: pointer-settings <alignment|writable|private|branch|root> <value>\n";
+                std::cout << "Usage: pointer-settings <alignment|writable|private|mode|branch|root> <value>\n";
                 continue;
             }
             const auto key = lower(args[1]);
@@ -2188,6 +2204,12 @@ int main() {
                 const auto value = parseToggle(args[2]);
                 if (!value) valid = false;
                 else pointerDefaults.privateOnly = *value;
+            } else if (key == "mode" || key == "strategy") {
+                const auto value = lower(args[2]);
+                if (value == "auto") pointerDefaults.searchMode = cw::PointerSearchMode::Auto;
+                else if (value == "indexed" || value == "index") pointerDefaults.searchMode = cw::PointerSearchMode::Indexed;
+                else if (value == "targeted" || value == "deep" || value == "layered") pointerDefaults.searchMode = cw::PointerSearchMode::Targeted;
+                else valid = false;
             } else if (key == "branch" || key == "branching") {
                 try {
                     const auto value = static_cast<std::size_t>(std::stoull(args[2], nullptr, 0));

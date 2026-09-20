@@ -522,7 +522,7 @@ int buildEngine(const fs::path& outputDirectory) {
         std::string versionOutput;
         if (!runProcess(candidate, {L"--version"}, workspace, exitCode, &versionOutput) ||
             exitCode != 0 ||
-            versionOutput.find("protocol 1.0") == std::string::npos) {
+            versionOutput.find("protocol 1.1") == std::string::npos) {
             throw std::runtime_error("Generated engine failed protocol/version self-check");
         }
 

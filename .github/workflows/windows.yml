@@ -56,6 +56,6 @@ jobs:
         run: |
           .\scripts\Test-ReleaseWithDefender.ps1 -Path @(
             ".\build\Release\cw.exe",
-            ".\build\Release\cw-gui.exe",
+            ".\build\Release\Cheat Wizard.exe",
             ".\build\Release\cw-trainer-builder.exe"
           )

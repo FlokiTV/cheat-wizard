@@ -155,6 +155,7 @@ pointer-settings
 pointer-settings alignment <natural|byte|2|4|8>
 pointer-settings writable <on|off>
 pointer-settings private <on|off>
+pointer-settings mode <auto|indexed|targeted>
 pointer-settings branch <1..65536>
 pointer-settings root <any|module-name>
 ```
@@ -162,10 +163,11 @@ pointer-settings root <any|module-name>
 - natural alignment uses the target pointer width;
 - byte/2/4/8 select the pointer-slot scan stride;
 - writable/private restrict which source memory regions are indexed;
-- branch caps candidate fan-out per search node;
+- mode selects `auto` (indexed with targeted fallback), `indexed` only, or index-free `targeted`;
+- branch caps candidate fan-out per search node/layer;
 - root limits accepted static roots to a module name.
 
-Pointer chains are always rooted in a loaded module. `root` narrows that set.
+Pointer chains are always rooted in a loaded module. `root` narrows that set. In `auto` mode, any indexed pass that returns zero chains automatically retries using the layered targeted search.
 
 ## Live pointer scanner
 

@@ -2,9 +2,9 @@
 
 Version: 1.7.0
 Platform: Windows x64
-Primary frontend: `cw-gui.exe`
+Primary frontend: `Cheat Wizard.exe`
 Current engine/diagnostic frontend: `cw.exe` (legacy direct-access topology during migration)
-Target engine boundary: locally built `cw-engine.exe`; `cw.exe` and `cw-gui.exe` become IPC frontends. See [`ENGINE_ARCHITECTURE.md`](ENGINE_ARCHITECTURE.md).
+Target engine boundary: locally built `cw-engine.exe`; `cw.exe` and `Cheat Wizard.exe` become IPC frontends. See [`ENGINE_ARCHITECTURE.md`](ENGINE_ARCHITECTURE.md).
 
 ## 1. Problem statement
 
@@ -522,7 +522,7 @@ The project now treats executable separation as an architectural invariant:
 
 ```text
 cw.exe                  -> CLI only
-cw-gui.exe              -> visual engineering + trainer project authoring
+Cheat Wizard.exe              -> visual engineering + trainer project authoring
 cw-trainer-builder.exe  -> offline standalone-EXE packager
 GeneratedTrainer.exe-> self-contained runtime for the configured profiles
 ```

@@ -3,7 +3,7 @@
 ## Windows-native gates executed for the CW rebrand
 
 - `test-windows.bat`: PASS.
-- MSVC Release outputs: `cw.exe`, `cw-gui.exe`, `cw-trainer-builder.exe`: PASS.
+- MSVC Release outputs: `cw.exe`, `Cheat Wizard.exe`, `cw-trainer-builder.exe`: PASS.
 - CTest on the Windows build: 1/1 PASS.
 - Direct `cw_core_tests.exe`: ALL CORE TESTS PASSED, including `.mces`, `.mcea`, `.mcep`, `.mcptr`, `.mcpm`, pointer-profile and trainer-adjacent persistence contracts.
 - `cw.exe` CLI banner/version/prompt smoke: PASS (`Cheat Wizard`, `cw>`).
@@ -31,7 +31,7 @@ artifacts/Cheat-Wizard-v1.7.0-win64.zip
 Expected public-package contents from v1.7.3 onward:
 
 ```text
-cw-gui.exe
+Cheat Wizard.exe
 cw-trainer-builder.exe
 README.txt
 LICENSE
@@ -47,7 +47,7 @@ The GitHub Release also publishes a `Cheat-Wizard-v1.7.0-win64.zip.sha256` sidec
 
 - package manifest SHA-256 verification: PASS.
 - ZIP extracted to an isolated clean-room directory: PASS.
-- clean-room `cw-gui.exe` startup and locale discovery: PASS.
+- clean-room `Cheat Wizard.exe` startup and locale discovery: PASS.
 - clean-room `cw-trainer-builder.exe` current + legacy project smoke: PASS.
 - no `.mcptr`, `prod/`, local Trainer executable or local target/project JSON is included in the ZIP.
 
@@ -64,7 +64,7 @@ Current release policy:
 
 - GitHub Actions runner: `windows-2022`.
 - Required compiler family: Visual Studio 2022 MSVC `19.4x`, provided by the pinned `windows-2022` runner; official workflows reject `19.5x` codegen.
-- Main CI antivirus gate: `scripts/Test-ReleaseWithDefender.ps1` scans `cw.exe`, `cw-gui.exe` and `cw-trainer-builder.exe` before a release tag is created.
+- Main CI antivirus gate: `scripts/Test-ReleaseWithDefender.ps1` scans `cw.exe`, `Cheat Wizard.exe` and `cw-trainer-builder.exe` before a release tag is created.
 - Pre-publication antivirus gate: the same script scans the staged release payload and final ZIP before any GitHub Release upload.
 - Defender mode: custom scan with `-DisableRemediation`, so a detection remains observable and causes a non-zero result instead of being silently remediated.
 - Security intelligence update is mandatory by default; a failed update or unavailable scanner blocks publication.

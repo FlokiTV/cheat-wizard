@@ -2,7 +2,7 @@
 
 ## Completed through v1.7.0
 
-- public rebrand to **Cheat Wizard (CW)** with `cw.exe`, `cw-gui.exe` and `cw-trainer-builder.exe`;
+- public rebrand to **Cheat Wizard (CW)** with `cw.exe`, `Cheat Wizard.exe` and `cw-trainer-builder.exe`;
 - UTF-8 JSON locale system with `en-US`, `pt-BR`, fallback, persistence and dynamic locale discovery;
 - real Windows process attach and memory-region scanning;
 - typed and mixed Exact/Unknown scans and refinements;

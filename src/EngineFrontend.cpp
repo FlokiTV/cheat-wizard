@@ -690,6 +690,9 @@ bool EngineClientPointerScanner::writeOptions(EngineBufferWriter& payload, const
     if (options.writableOnly) flags |= 0x1u;
     if (options.privateOnly) flags |= 0x2u;
     payload.writeU8(flags);
+    const auto searchMode = static_cast<std::uint8_t>(options.searchMode);
+    if (searchMode > static_cast<std::uint8_t>(PointerSearchMode::Targeted)) return false;
+    payload.writeU8(searchMode);
     return payload.writeString(wideToUtf8(options.rootModuleName));
 }
 
@@ -697,18 +700,37 @@ bool EngineClientPointerScanner::parseStats(const EngineFrame& response, Pointer
     EngineBufferReader reader(response.payload);
     std::uint16_t pointerSize = 0;
     std::uint64_t indexEntries = 0, chains = 0, indexMs = 0, searchMs = 0;
-    std::uint8_t indexTruncated = 0, chainsTruncated = 0, cancelled = 0;
+    std::uint64_t directCandidates = 0, searchCandidates = 0;
+    std::uint64_t targetedDepth = 0, targetedFrontier = 0, targetedSlots = 0, targetedMatches = 0;
+    std::uint8_t indexTruncated = 0, chainsTruncated = 0, searchBudgetHit = 0, branchLimitHit = 0;
+    std::uint8_t targetedTruncated = 0, targetedUsed = 0, targetedFallbackUsed = 0, cancelled = 0;
     if (!reader.readU16(pointerSize) || !reader.readU64(indexEntries) || !reader.readU64(chains) ||
         !reader.readU64(stats.bytesRead) || !reader.readU64(stats.regionsRead) || !reader.readU64(indexMs) ||
-        !reader.readU64(searchMs) || !reader.readU8(indexTruncated) || !reader.readU8(chainsTruncated) ||
-        !reader.readU8(cancelled) || !reader.empty()) return false;
+        !reader.readU64(searchMs) || !reader.readU64(directCandidates) || !reader.readU64(searchCandidates) ||
+        !reader.readU64(targetedDepth) || !reader.readU64(targetedFrontier) ||
+        !reader.readU64(targetedSlots) || !reader.readU64(targetedMatches) ||
+        !reader.readU8(indexTruncated) || !reader.readU8(chainsTruncated) ||
+        !reader.readU8(searchBudgetHit) || !reader.readU8(branchLimitHit) ||
+        !reader.readU8(targetedTruncated) || !reader.readU8(targetedUsed) ||
+        !reader.readU8(targetedFallbackUsed) || !reader.readU8(cancelled) || !reader.empty()) return false;
     stats.pointerSize = pointerSize;
     stats.indexEntries = static_cast<std::size_t>(indexEntries);
     stats.chains = static_cast<std::size_t>(chains);
     stats.indexMs = bitsToDouble(indexMs);
     stats.searchMs = bitsToDouble(searchMs);
+    stats.directCandidates = static_cast<std::size_t>(directCandidates);
+    stats.searchCandidates = static_cast<std::size_t>(searchCandidates);
+    stats.targetedDepth = static_cast<std::size_t>(targetedDepth);
+    stats.targetedFrontier = static_cast<std::size_t>(targetedFrontier);
+    stats.targetedSlots = targetedSlots;
+    stats.targetedMatches = targetedMatches;
     stats.indexTruncated = indexTruncated != 0;
     stats.chainsTruncated = chainsTruncated != 0;
+    stats.searchBudgetHit = searchBudgetHit != 0;
+    stats.branchLimitHit = branchLimitHit != 0;
+    stats.targetedTruncated = targetedTruncated != 0;
+    stats.targetedUsed = targetedUsed != 0;
+    stats.targetedFallbackUsed = targetedFallbackUsed != 0;
     stats.cancelled = cancelled != 0;
     pointerSize_ = pointerSize;
     return true;
@@ -794,46 +816,93 @@ bool EngineClientPointerScanner::fetchIndex() {
 
 PointerScanStats EngineClientPointerScanner::captureIndex(const PointerScanOptions& options) {
     PointerScanStats stats{};
-    if (!client_) return stats;
+    lastOperationOk_ = false;
+    lastError_.clear();
+    if (!client_) { lastError_ = "Engine pointer client is unavailable"; return stats; }
     EngineBufferWriter payload;
-    if (!writeOptions(payload, options)) return stats;
+    if (!writeOptions(payload, options)) { lastError_ = "Invalid pointer-index options"; return stats; }
     EngineFrame response;
     std::string error;
-    if (!client_->transact(EngineMessageKind::PointerCaptureIndex, payload.take(), response, error) ||
-        response.header.kind != EngineMessageKind::PointerCaptureIndexResult || !parseStats(response, stats)) return {};
-    fetchIndex();
+    if (!client_->transact(EngineMessageKind::PointerCaptureIndex, payload.take(), response, error)) {
+        lastError_ = error.empty() ? "Pointer index RPC failed" : error;
+        return stats;
+    }
+    if (response.header.kind != EngineMessageKind::PointerCaptureIndexResult) {
+        lastError_ = "Unexpected PointerCaptureIndex response";
+        return stats;
+    }
+    if (!parseStats(response, stats)) {
+        lastError_ = "Malformed PointerCaptureIndex response";
+        return stats;
+    }
+    if (!fetchIndex()) {
+        lastError_ = "Could not fetch pointer index results";
+        return stats;
+    }
+    lastOperationOk_ = true;
     if (progressCallback_) progressCallback_(PointerProgress{stats.bytesRead, stats.regionsRead, stats.indexEntries});
     return stats;
 }
 
 PointerScanStats EngineClientPointerScanner::scan(std::uintptr_t target, const PointerScanOptions& options) {
     PointerScanStats stats{};
-    if (!client_) return stats;
+    lastOperationOk_ = false;
+    lastError_.clear();
+    if (!client_) { lastError_ = "Engine pointer client is unavailable"; return stats; }
     EngineBufferWriter payload;
     payload.writeU64(static_cast<std::uint64_t>(target));
-    if (!writeOptions(payload, options)) return stats;
+    if (!writeOptions(payload, options)) { lastError_ = "Invalid pointer-scan options"; return stats; }
     EngineFrame response;
     std::string error;
-    if (!client_->transact(EngineMessageKind::PointerDiscover, payload.take(), response, error) ||
-        response.header.kind != EngineMessageKind::PointerDiscoverResult || !parseStats(response, stats)) return {};
-    fetchChains();
+    if (!client_->transact(EngineMessageKind::PointerDiscover, payload.take(), response, error)) {
+        lastError_ = error.empty() ? "PointerDiscover RPC failed" : error;
+        return stats;
+    }
+    if (response.header.kind != EngineMessageKind::PointerDiscoverResult) {
+        lastError_ = "Unexpected PointerDiscover response";
+        return stats;
+    }
+    if (!parseStats(response, stats)) {
+        lastError_ = "Malformed PointerDiscover response";
+        return stats;
+    }
+    if (!fetchChains()) {
+        lastError_ = "Could not fetch pointer chains";
+        return stats;
+    }
     index_.clear();
+    lastOperationOk_ = true;
     if (progressCallback_) progressCallback_(PointerProgress{stats.bytesRead, stats.regionsRead, stats.indexEntries});
     return stats;
 }
 
 std::size_t EngineClientPointerScanner::rescan(std::uintptr_t target) {
-    if (!client_) return 0;
+    lastOperationOk_ = false;
+    lastError_.clear();
+    if (!client_) { lastError_ = "Engine pointer client is unavailable"; return 0; }
     EngineBufferWriter payload;
     payload.writeU64(static_cast<std::uint64_t>(target));
     EngineFrame response;
     std::string error;
-    if (!client_->transact(EngineMessageKind::PointerRescan, payload.take(), response, error) ||
-        response.header.kind != EngineMessageKind::PointerRescanResult) return chains_.size();
+    if (!client_->transact(EngineMessageKind::PointerRescan, payload.take(), response, error)) {
+        lastError_ = error.empty() ? "PointerRescan RPC failed" : error;
+        return chains_.size();
+    }
+    if (response.header.kind != EngineMessageKind::PointerRescanResult) {
+        lastError_ = "Unexpected PointerRescan response";
+        return chains_.size();
+    }
     EngineBufferReader reader(response.payload);
     std::uint64_t before = 0, after = 0;
-    if (!reader.readU64(before) || !reader.readU64(after) || !reader.empty()) return chains_.size();
-    fetchChains();
+    if (!reader.readU64(before) || !reader.readU64(after) || !reader.empty()) {
+        lastError_ = "Malformed PointerRescan response";
+        return chains_.size();
+    }
+    if (!fetchChains()) {
+        lastError_ = "Could not fetch rescanned pointer chains";
+        return chains_.size();
+    }
+    lastOperationOk_ = true;
     return static_cast<std::size_t>(after);
 }
 

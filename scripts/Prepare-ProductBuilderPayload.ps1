@@ -23,7 +23,7 @@ $toolchainId = "llvm-mingw-$toolchainVersion-ucrt-x86_64-minimal"
 $productVersion = "1.7.3"
 $engineVersion = "1.7.3"
 $protocolMajor = 1
-$protocolMinor = 0
+$protocolMinor = 1
 
 $sourceFiles = @(
     "src\Value.cpp",
@@ -350,7 +350,7 @@ $resourceRoot = Join-Path $sourceRoot "resources"
 Ensure-Directory $resourceRoot
 Copy-Item -LiteralPath (Join-Path $repoRoot "resources\cheat-wizard.ico") -Destination (Join-Path $resourceRoot "cheat-wizard.ico") -Force
 New-VersionRc (Join-Path $resourceRoot "engine-version.rc") "Cheat Wizard Engine" "cw-engine" "cw-engine.exe"
-New-VersionRc (Join-Path $resourceRoot "gui-version.rc") "Cheat Wizard" "cw-gui" "cw-gui.exe"
+New-VersionRc (Join-Path $resourceRoot "gui-version.rc") "Cheat Wizard" "cw-gui" "Cheat Wizard.exe"
 New-VersionRc (Join-Path $resourceRoot "trainer-runtime-version.rc") "Cheat Wizard Trainer Runtime" "trainer-runtime-template" "trainer-runtime-template.exe"
 New-VersionRc (Join-Path $resourceRoot "trainer-builder-version.rc") "Cheat Wizard Trainer Builder" "cw-trainer-builder" "cw-trainer-builder.exe"
 Copy-Item -LiteralPath (Join-Path $resourceRoot "engine-version.rc") -Destination (Join-Path $sourceRoot "engine-version.rc") -Force

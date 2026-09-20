@@ -3,7 +3,7 @@
 - The pointer scanner is bounded and is not a complete clone of Cheat Engine's pointer scanner.
 - Pointer roots are static loaded-module addresses; arbitrary heap-only roots are not emitted as final chains.
 - Negative offsets are disabled by default and bounded separately by `max_negative_offset`.
-- Larger offset windows, byte alignment, or high branching caps can increase pointer-index/search cost substantially.
+- Larger offset windows, byte alignment, or high branching caps can increase pointer-index/search cost substantially. Auto mode mitigates false negatives from the global-index path by falling back to an index-free layered search whenever no chain was found.
 - `writable` and `private` pointer filters can reduce noise but can also remove a valid pointer source.
 - Restricting `root` to the wrong module will produce false negatives.
 - Full source defaults to a larger pointer-index/map capacity than the bundled portable executable.

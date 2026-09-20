@@ -12,7 +12,7 @@
 namespace cw {
 
 inline constexpr std::uint16_t kEngineProtocolMajor = 1;
-inline constexpr std::uint16_t kEngineProtocolMinor = 0;
+inline constexpr std::uint16_t kEngineProtocolMinor = 1;
 inline constexpr std::size_t kEngineFrameHeaderSize = 28;
 inline constexpr std::uint32_t kEngineMaxPayloadSize = 16u * 1024u * 1024u;
 

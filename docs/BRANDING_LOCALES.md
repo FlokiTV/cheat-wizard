@@ -7,7 +7,7 @@ The product name is **Cheat Wizard** and the short name is **CW**.
 Public Windows artifacts for this migration are:
 
 - `cw.exe` — CLI/diagnostic frontend.
-- `cw-gui.exe` — primary graphical frontend.
+- `Cheat Wizard.exe` — primary graphical frontend.
 - `cw-trainer-builder.exe` — standalone trainer packager.
 - `Cheat-Wizard-v1.7.0-win64.zip` — portable Windows package.
 
@@ -61,7 +61,7 @@ The command-line tools and the fixed runtime chrome of generated trainer executa
 The GUI resolves files relative to its own executable directory, not the process working directory:
 
 ```text
-cw-gui.exe
+Cheat Wizard.exe
 cw-settings.json
 locales/
   en-US.json

@@ -8,6 +8,6 @@ if errorlevel 1 exit /b %errorlevel%
 echo.
 echo Built:
 echo   build\Release\cw.exe
-echo   build\Release\cw-gui.exe
+echo   build\Release\Cheat Wizard.exe
 echo   build\Release\cw-trainer-builder.exe
 endlocal

@@ -218,16 +218,24 @@ if(BUILD_TESTING)
         target_compile_options(cw_mock_aob_tests PRIVATE -Wall -Wextra -Wpedantic)
         add_test(NAME cw_mock_aob_tests COMMAND cw_mock_aob_tests)
 
-        add_executable(cw_mock_pointer_tests
-            tests/MockPointerScannerTests.cpp
-            src/PointerScanner.cpp
-        )
-        target_link_libraries(cw_mock_pointer_tests PRIVATE cw_core)
-        target_include_directories(cw_mock_pointer_tests PRIVATE tests/win32_stubs include)
-        target_compile_features(cw_mock_pointer_tests PRIVATE cxx_std_20)
-        target_compile_options(cw_mock_pointer_tests PRIVATE -Wall -Wextra -Wpedantic)
-        add_test(NAME cw_mock_pointer_tests COMMAND cw_mock_pointer_tests)
     endif()
+
+    # PointerScanner is exercised against deterministic Win32 stubs on every
+    # host, including Windows. This keeps targeted/index-fallback regressions in
+    # the release CI path instead of only in non-Windows developer builds.
+    add_executable(cw_mock_pointer_tests
+        tests/MockPointerScannerTests.cpp
+        src/PointerScanner.cpp
+    )
+    target_link_libraries(cw_mock_pointer_tests PRIVATE cw_core)
+    target_include_directories(cw_mock_pointer_tests PRIVATE tests/win32_stubs include)
+    target_compile_features(cw_mock_pointer_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(cw_mock_pointer_tests PRIVATE /W4 /permissive- /EHsc)
+    else()
+        target_compile_options(cw_mock_pointer_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME cw_mock_pointer_tests COMMAND cw_mock_pointer_tests)
 endif()
 
 if(WIN32)
@@ -369,8 +377,8 @@ if(WIN32)
         portable_win/CW_GUI_NoCRT.cpp
         portable_win/GuiEngineBridge.cpp
         portable_win/StandardCRTEntry.cpp)
-    set_target_properties(cw_gui PROPERTIES OUTPUT_NAME "cw-gui")
-    cw_add_version_resource(cw_gui "cw-gui.exe" "Cheat Wizard" "cw-gui")
+    set_target_properties(cw_gui PROPERTIES OUTPUT_NAME "Cheat Wizard")
+    cw_add_version_resource(cw_gui "Cheat Wizard.exe" "Cheat Wizard" "cw-gui")
     cw_harden_windows_target(cw_gui)
     target_compile_features(cw_gui PRIVATE cxx_std_20)
     target_compile_definitions(cw_gui PRIVATE CW_USE_STANDARD_CRT=1 CW_CRT_ENTRY_GUI=1)

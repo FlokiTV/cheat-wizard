@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-EXE="${1:-$ROOT/bin/cw-gui.exe}"
+EXE="${1:-$ROOT/bin/Cheat Wizard.exe}"
 OBJDUMP="${OBJDUMP:-/usr/local/swift/usr/bin/llvm-objdump}"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT

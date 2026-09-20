@@ -35,7 +35,7 @@ if ($builderProcess.ExitCode -ne 0) {
 }
 
 $required = @(
-    "cw-gui.exe",
+    "Cheat Wizard.exe",
     "cw-engine.exe",
     "cw-trainer-builder.exe",
     "cw-engine.build.json",
@@ -54,7 +54,7 @@ foreach ($relative in $required) {
 }
 
 $version = & (Join-Path $outputDir "cw-engine.exe") --version
-if ($LASTEXITCODE -ne 0 -or ($version -join [Environment]::NewLine) -notmatch "protocol 1\.0") {
+if ($LASTEXITCODE -ne 0 -or ($version -join [Environment]::NewLine) -notmatch "protocol 1\.1") {
     throw "Generated cw-engine.exe failed version/protocol self-check: $version"
 }
 
@@ -62,7 +62,7 @@ $manifest = Get-Content -LiteralPath (Join-Path $outputDir "cw-build-manifest.js
 if (-not $manifest.builtLocally -or $manifest.architecture -ne "x64") {
     throw "Product manifest does not identify a local x64 build."
 }
-foreach ($name in @("cw-gui.exe", "cw-engine.exe", "cw-trainer-builder.exe")) {
+foreach ($name in @("Cheat Wizard.exe", "cw-engine.exe", "cw-trainer-builder.exe")) {
     $actual = (Get-FileHash -LiteralPath (Join-Path $outputDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
     $expected = [string]$manifest.files.$name
     if ($actual -ne $expected) {

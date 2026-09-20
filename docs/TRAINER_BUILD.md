@@ -2,13 +2,13 @@
 
 ## 1. Produce stable pointer profiles
 
-In `cw-gui.exe`, find the target value, run pointer discovery, restart/rescan until the desired chains are stable, then save a `.cwptr` profile from the Pointers workspace.
+In `Cheat Wizard.exe`, find the target value, run pointer discovery, restart/rescan until the desired chains are stable, then save a `.cwptr` profile from the Pointers workspace.
 
 Repeat for each logical value the trainer should expose. New profiles use the `CWPROF01` format; compatible legacy `.mcptr` / `MCEPROF1` profiles can still be loaded and packaged.
 
 ## 2. Create the trainer project
 
-Open the **Trainer** workspace in `cw-gui.exe`.
+Open the **Trainer** workspace in `Cheat Wizard.exe`.
 
 - Add saved `.cwptr` profiles (legacy `.mcptr` is accepted when importing old work).
 - Edit labels and optional default values.
@@ -43,7 +43,7 @@ Distribute only the generated trainer when that is all the recipient needs:
 MyTrainer.exe
 ```
 
-The generated trainer does not need `cw.exe`, `cw-gui.exe`, `cw-trainer-builder.exe`, JSON, external `.cwptr` files, Python or the Visual C++ Redistributable from the portable no-CRT build.
+The generated trainer does not need `cw.exe`, `Cheat Wizard.exe`, `cw-trainer-builder.exe`, JSON, external `.cwptr` files, Python or the Visual C++ Redistributable from the portable no-CRT build.
 
 ## Runtime behavior
 

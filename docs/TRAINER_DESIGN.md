@@ -8,7 +8,7 @@ Cheat Wizard intentionally uses separate executables with separate responsibilit
 cw.exe
   CLI only. Interactive memory-scanning/reverse-engineering commands.
 
-cw-gui.exe
+Cheat Wizard.exe
   Visual engineering tool. Finds values and stable pointer chains, saves .cwptr
   profiles, and creates .cwtrainer projects.
 
@@ -26,7 +26,7 @@ MyTrainer.exe
 ## Build pipeline
 
 ```text
-cw-gui.exe
+Cheat Wizard.exe
    |  save stable pointer profiles
    |  create trainer.cwtrainer
    v

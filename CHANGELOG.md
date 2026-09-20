@@ -1,15 +1,15 @@
 # Changelog
 
-## 1.7.3 - 2026-09-18
+## 1.7.3 - 2026-09-20
 
 ### Standalone local builder distribution
 
 - Replaced the prebuilt end-user ZIP with a single `Cheat-Wizard-Builder.exe` distribution entry point.
 - The standalone builder embeds the pinned Cheat Wizard sources plus a dependency-pruned llvm-mingw toolchain and builds the end-user application locally without requiring Visual Studio, CMake, Git, Python or a network connection.
-- The generated application folder contains `cw-gui.exe`, `cw-engine.exe`, `cw-trainer-builder.exe`, locales, licenses and build manifests. A separate `cw-engine-builder.exe` is no longer required: the product builder compiles `cw-engine.exe` directly.
+- The generated application folder contains `Cheat Wizard.exe`, `cw-engine.exe`, `cw-trainer-builder.exe`, locales, licenses and build manifests. A separate `cw-engine-builder.exe` is no longer required: the product builder compiles `cw-engine.exe` directly.
 - Added `Build & Launch` UX plus headless mode for CI/reproducibility, PE/protocol validation, SHA-256 manifests and atomic installation/rollback of the generated application folder.
 - Release CI now prepares the verified source/toolchain payload, smoke-tests the standalone builder end-to-end, scans both the distributed builder and its generated application with Microsoft Defender, and publishes the builder with a SHA-256 sidecar.
-- The GUI/engine split remains enforced: `cw-gui.exe` is a frontend over the local Named Pipe engine boundary and the build gate prevents direct live-process memory/toolhelp imports from being reintroduced.
+- The GUI/engine split remains enforced: `Cheat Wizard.exe` is a frontend over the local Named Pipe engine boundary and the build gate prevents direct live-process memory/toolhelp imports from being reintroduced.
 - Browser/FastPath detections are still treated as release-validation failures. The project does not instruct users to disable Defender, add exclusions or whitelist flagged artifacts.
 
 ### RC4 follow-up fixes
@@ -19,6 +19,15 @@
 - Fixed clipping of the **Cheat Wizard** brand in the top bar by reserving enough width and shifting the navigation layout.
 - Restored the historical GUI semantics for Exact Float scans by removing the implicit `0.00001` tolerance introduced during the IPC migration. Exact Float now uses zero tolerance unless another frontend explicitly configures one.
 - Added an explicit warning when the scan result limit is reached, plus an Exact Float RPC regression test. Release CI now reruns the process/scan RPC suite against the `cw-engine.exe` actually produced by the standalone Product Builder.
+
+### Final release stabilization
+
+- Renamed the primary graphical executable from `cw-gui.exe` to `Cheat Wizard.exe` across local builds, the standalone Product Builder, manifests, launch flow, packaging and current documentation. Internal CMake/source target names remain unchanged.
+- Bumped the local frontend/engine protocol to **1.1** and require an exact protocol major/minor match during the engine handshake and requests.
+- Added pointer-search strategies **Auto**, **Indexed** and **Targeted**. Auto can fall back to the index-free targeted layered search when the bounded global index/search finds no chain; the Deep GUI preset uses Targeted directly.
+- Expanded pointer diagnostics with direct/search candidate counts, targeted depth/frontier/slot/match telemetry, search-budget/branch-limit state and explicit fallback/truncation reporting.
+- Added regression coverage for targeted pointer discovery and Auto fallback behavior, while preserving restart/rescan-compatible module-relative pointer profiles.
+- Updated CI, packaging, Product Builder payload preparation, checksums and current docs for the final executable name and protocol contract.
 
 ## 1.7.2 - 2026-09-18
 

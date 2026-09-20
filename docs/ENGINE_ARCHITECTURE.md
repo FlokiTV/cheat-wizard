@@ -8,15 +8,15 @@ The change is an architectural refactor. It is **not** an antivirus-bypass mecha
 
 ## 1. Motivation
 
-Today `cw.exe` and `cw-gui.exe` both own live process-memory behavior. The CLI links `ProcessManager`, `MemoryScanner`, `MemoryWriter`, `FreezeManager` and `PointerScanner`; the GUI contains a separate native implementation of the same class of operations. Both therefore call target-process APIs directly.
+Today `cw.exe` and `Cheat Wizard.exe` both own live process-memory behavior. The CLI links `ProcessManager`, `MemoryScanner`, `MemoryWriter`, `FreezeManager` and `PointerScanner`; the GUI contains a separate native implementation of the same class of operations. Both therefore call target-process APIs directly.
 
 Target state:
 
 ```text
-cw-gui.exe  ---- local IPC ---->  cw-engine.exe  ---- Win32 process APIs ----> target
+Cheat Wizard.exe  ---- local IPC ---->  cw-engine.exe  ---- Win32 process APIs ----> target
 cw.exe      ---- local IPC ---->  cw-engine.exe
 
-Cheat-Wizard-Builder.exe -- local source/toolchain build --> cw-gui.exe
+Cheat-Wizard-Builder.exe -- local source/toolchain build --> Cheat Wizard.exe
                                                        +-> cw-engine.exe
                                                        +-> cw-trainer-builder.exe
                                                        +-> build manifests
@@ -26,7 +26,7 @@ GeneratedTrainer.exe remains self-contained.
 
 ## 2. Executable boundaries
 
-### `cw-gui.exe`
+### `Cheat Wizard.exe`
 
 Owns window/rendering, input, locale/UI state, project/profile authoring UX and the IPC client. It must not directly call/import `OpenProcess`, `ReadProcessMemory`, `WriteProcessMemory` or use `VirtualQueryEx` for target traversal.
 
@@ -63,7 +63,7 @@ cw_ipc
 cw_ipc_client       cw-engine.exe
       ^
       +-- cw.exe
-      +-- cw-gui.exe
+      +-- Cheat Wizard.exe
 ```
 
 `cw_core` stays focused on algorithms/formats where practical. A new Windows-only `cw_engine_core` owns live-process implementation. Frontend targets must never link `cw_engine_core`. `cw_ipc` contains serialization/protocol code only.
@@ -163,7 +163,7 @@ Cheat-Wizard-Builder.exe
         +-- Build & Launch
               |
               +-> Cheat-Wizard/
-                    cw-gui.exe
+                    Cheat Wizard.exe
                     cw-engine.exe
                     cw-trainer-builder.exe
                     cw-engine.build.json
@@ -186,7 +186,7 @@ The toolchain is llvm-mingw 20260908 UCRT x64, pinned by upstream archive SHA-25
   "schema": 1,
   "engineVersion": "1.0.0",
   "protocolMajor": 1,
-  "protocolMinor": 0,
+  "protocolMinor": 1,
   "architecture": "x64",
   "sourceRevision": "<revision>",
   "sourceDigest": "<sha256>",
@@ -213,7 +213,7 @@ compile/link -> cw-engine.new.exe
 
 ## 12. Trainer boundary
 
-The new engine belongs to the interactive engineering application only. `cw-trainer-builder.exe` continues producing self-contained `GeneratedTrainer.exe` files. Trainers do not connect to `cw-engine.exe`, `cw.exe` or `cw-gui.exe`.
+The new engine belongs to the interactive engineering application only. `cw-trainer-builder.exe` continues producing self-contained `GeneratedTrainer.exe` files. Trainers do not connect to `cw-engine.exe`, `cw.exe` or `Cheat Wizard.exe`.
 
 ## 13. Security / Defender posture
 
@@ -233,7 +233,7 @@ A locally built engine can follow a different reputation path than a downloaded 
 
 Migration is complete when:
 
-1. `cw-gui.exe` has no direct target-memory access path.
+1. `Cheat Wizard.exe` has no direct target-memory access path.
 2. `cw.exe` has no direct target-memory access path.
 3. PE/import audit confirms frontends do not import `OpenProcess`, `ReadProcessMemory` or `WriteProcessMemory`.
 4. `cw-engine.exe` is the sole interactive CW component owning live target-memory operations.
@@ -261,7 +261,7 @@ Migration is complete when:
 4. implement `cw-engine.exe` + Named Pipe server;
 5. implement shared IPC client;
 6. migrate `cw.exe`;
-7. migrate `cw-gui.exe` workspace by workspace;
+7. migrate `Cheat Wizard.exe` workspace by workspace;
 8. remove duplicated direct-memory frontend code;
 9. implement manifest/lifecycle;
 10. implement the standalone Product Builder that generates the engine directly;

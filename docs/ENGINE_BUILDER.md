@@ -26,7 +26,7 @@ At runtime the builder:
 3. compiles the VERSIONINFO resource;
 4. links a static Windows x64 `cw-engine.exe`;
 5. validates the PE architecture/subsystem and ASLR/NX/HighEntropyVA flags;
-6. runs `cw-engine.exe --version` and checks protocol `1.0`;
+6. runs `cw-engine.exe --version` and checks protocol `1.1`;
 7. calculates SHA-256 using Windows CNG;
 8. writes `cw-engine.build.json`;
 9. stages the engine and manifest beside Cheat Wizard;
@@ -95,7 +95,7 @@ cw-engine-builder.exe --output-dir C:\\path\\to\\portable-folder
   "schema": 1,
   "engineVersion": "1.7.3",
   "protocolMajor": 1,
-  "protocolMinor": 0,
+  "protocolMinor": 1,
   "architecture": "x64",
   "sourceRevision": "<git revision>",
   "sourceDigest": "<sha256>",

@@ -6,7 +6,7 @@ Cheat Wizard custom text fields now support caret placement, selection, Ctrl+A, 
 
 ## v1.6.0 — Scanner + Pointers + persistent profiles
 
-`bin/cw-gui.exe` is the Windows x64 graphical frontend for Cheat Wizard. It uses the custom Zinc GDI renderer, custom retained text fields, virtual tables, double-buffered painting and background workers for whole-memory operations.
+`bin/Cheat Wizard.exe` is the Windows x64 graphical frontend for Cheat Wizard. It uses the custom Zinc GDI renderer, custom retained text fields, virtual tables, double-buffered painting and background workers for whole-memory operations.
 
 ## Navigation
 
@@ -47,10 +47,10 @@ The first UI deliberately exposes presets instead of raw pointer-search paramete
 | Preset | Depth | Max offset | Work budget | Behavior |
 | --- | ---: | ---: | ---: | --- |
 | Rapida | 3 | `0x400` | 250k steps | Small, quick search |
-| Equilibrada | 4 | `0x1000` | 1.25M steps | Recommended starting point |
+| Equilibrada | 5 | `+0x2000` / `-0x100` | 2M steps | Broader default with 4-byte source alignment |
 | Profunda | 6 | `+0x4000` / `-0x400` | layered | Targeted reverse scan without a giant global index |
 
-Fast/Balanced index writable pointer storage first. **Deep uses the targeted layered engine**: each level rescans source memory only for pointers that can reach the current frontier, so it is not constrained by the 8M global-index ceiling. The root is restricted to the attached executable module by default; **Raiz: qualquer modulo** relaxes that constraint.
+Fast/Balanced build a bounded pointer index first. If that indexed path finds no chain, **Auto falls back to the targeted layered engine** instead of treating an empty or partial index result as final. **Deep uses targeted mode directly** and never depends on the 8M global-index ceiling. Static roots in any loaded module are considered by default; the root toggle can deliberately restrict discovery to the attached executable when desired.
 
 
 ### Long searches and progress
@@ -127,7 +127,7 @@ If a watched address is already frozen, manual Write updates the freeze target b
 
 ## Language / locale
 
-`cw-gui.exe` loads UTF-8 translation files from `locales/*.json` beside the executable. The footer language control changes the active locale immediately and stores the selection in `cw-settings.json`. Missing or invalid locale files fall back to compiled English strings. `en-US` and `pt-BR` ship by default, and additional locale JSONs are discovered at startup without recompiling the GUI.
+`Cheat Wizard.exe` loads UTF-8 translation files from `locales/*.json` beside the executable. The footer language control changes the active locale immediately and stores the selection in `cw-settings.json`. Missing or invalid locale files fall back to compiled English strings. `en-US` and `pt-BR` ship by default, and additional locale JSONs are discovered at startup without recompiling the GUI.
 
 ## Advanced CLI-only areas
 
@@ -147,9 +147,10 @@ After a pointer search, the Pointer workspace records three useful diagnostics:
 
 - **index**: how many plausible pointer values were indexed; `[PARCIAL]` means the safety ceiling was reached;
 - **pais do alvo**: how many indexed pointer values fall within the current offset window of the target address;
-- **fallback: todos os modulos**: the main executable yielded no chain, so roots in all loaded modules were tried automatically using the same pointer index.
+- **fallback direcionado**: Auto exhausted a bounded index/search without a chain and switched to the layered search;
+- **fallback: todos os modulos**: shown only when the user explicitly restricted roots to the main executable and that restricted search returned no chain.
 
-The Deep preset is now **index-free**: depth 6, max positive offset `0x4000`, max negative offset `0x400`, 4-byte source alignment, and a bounded/deduplicated frontier. It scans writable memory plus module ranges at every layer. An 8M partial global index is therefore no longer the failure mode for Deep.
+The Deep preset is **index-free**: depth 6, max positive offset `0x4000`, max negative offset `0x400`, 4-byte source alignment, and a bounded/deduplicated frontier. It scans eligible source memory at every layer and preserves static roots in loaded module ranges. An 8M partial global index is therefore no longer the failure mode for Deep.
 
 ## Trainer workspace — v1.6.0
 

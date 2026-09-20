@@ -30,7 +30,7 @@ The build sequence is:
 
 1. compile shared core / IPC sources;
 2. build and validate `cw-engine.exe`;
-3. build and validate `cw-gui.exe`;
+3. build and validate `Cheat Wizard.exe`;
 4. build the native trainer runtime template;
 5. embed that runtime into and build `cw-trainer-builder.exe`;
 6. generate SHA-256 build manifests;
@@ -42,7 +42,7 @@ The generated folder contains:
 
 ```text
 Cheat-Wizard/
-  cw-gui.exe
+  Cheat Wizard.exe
   cw-engine.exe
   cw-trainer-builder.exe
   cw-engine.build.json
@@ -63,7 +63,7 @@ Normal launch opens a small native Win32 window. The default output directory is
 
 The primary action is **Build & Launch**. Compilation runs on a worker thread so the window remains responsive. The window cannot be closed while a build is active.
 
-On success, the builder launches the locally compiled `cw-gui.exe`.
+On success, the builder launches the locally compiled `Cheat Wizard.exe`.
 
 ## Headless mode
 

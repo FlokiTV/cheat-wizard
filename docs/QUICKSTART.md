@@ -2,7 +2,7 @@
 
 ## GUI: find a value and then a pointer
 
-1. Run `cw-gui.exe` (or `bin\cw-gui.exe` in the repository release layout).
+1. Run `Cheat Wizard.exe` (or `bin\Cheat Wizard.exe` in the repository release layout).
 2. Select the target process and click **Attach / Anexar**.
 3. In **Scanner**, find/refine the value until you have the correct address.
 4. Double-click the result to add it to the Address List.
@@ -22,7 +22,7 @@ On a later process run, attach to the process, load the `.cwptr` profile in the 
 ## Build a standalone trainer
 
 1. Save one stable `.cwptr` for each logical value.
-2. Open the **Trainer** workspace in `cw-gui.exe`.
+2. Open the **Trainer** workspace in `Cheat Wizard.exe`.
 3. Add the profiles, labels/defaults and optional layout/text blocks.
 4. In **Visual**, configure colors and optionally choose or convert an image to `.ico`.
 5. Save `trainer.cwtrainer`.
@@ -32,7 +32,7 @@ On a later process run, attach to the process, load the `.cwptr` profile in the 
 cw-trainer-builder.exe build trainer.cwtrainer -o MyTrainer.exe
 ```
 
-The generated trainer embeds its validated profiles and runtime; it does not require `cw.exe`, `cw-gui.exe`, JSON or external `.cwptr` files at runtime.
+The generated trainer embeds its validated profiles and runtime; it does not require `cw.exe`, `Cheat Wizard.exe`, JSON or external `.cwptr` files at runtime.
 
 ## CLI basics
 

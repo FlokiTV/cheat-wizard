@@ -164,6 +164,8 @@ public:
     [[nodiscard]] std::size_t pointerSize() const noexcept { return pointerSize_; }
     [[nodiscard]] std::size_t chainPointerSize() const noexcept { return chainPointerSize_; }
     [[nodiscard]] const std::vector<ModuleInfo>& modules() const noexcept { return modules_; }
+    [[nodiscard]] bool lastOperationOk() const noexcept { return lastOperationOk_; }
+    [[nodiscard]] const std::string& lastError() const noexcept { return lastError_; }
 
 private:
     bool writeOptions(EngineBufferWriter& payload, const PointerScanOptions& options) const;
@@ -179,6 +181,8 @@ private:
     std::vector<std::optional<std::uintptr_t>> resolved_;
     std::vector<PointerEntry> index_;
     ProgressCallback progressCallback_{};
+    bool lastOperationOk_{true};
+    std::string lastError_;
 };
 
 class EngineFrontendSession {
